@@ -1,0 +1,286 @@
+# tui-dashboard 示例配置
+#
+# 用法:
+#   go run .                  自动查找配置:--config → ./config.yaml → 配置目录 → 本内置示例
+#   go run . --config <路径>   指定配置;每条 cmd 的工作目录 = 该文件所在目录
+#   go run . --init           把本文件与 scripts/ 复制到默认配置目录
+#
+# ── 源类型(type:,必填)──────────────────────────────────────────────────────
+#
+# 每个源声明它产出哪一种数据。每种类型只有一种规范格式:
+#
+#   type          脚本输出                        跨帧
+#   ───────────────────────────────────────────────────────────────────────────
+#   text          任意文本                        原样保留,不解析
+#   number        整段为一个数                    每帧一个采样点(时间戳由程序生成)
+#   array         每行一个数                      不累积,x 轴为序号
+#   timeseries    每行 "<时间戳> <数值>"          按时间戳累积(时间戳由脚本提供)
+#   map           每行 "键: 值"                   数值字段各自累积,value: 指定字段
+#   table         每行一条记录(首行可表头)        不累积
+#   logs          每行一条日志(时间/级别可省)     追加进滚动缓冲(log_cap)
+#
+# 脚本输出不符合上表任何一种格式时,由脚本自行转换后再输出(见 scripts/sys_log.sh)。
+#
+# ── value: 何时可省略 ───────────────────────────────────────────────────────
+#
+# 源声明的类型已经决定取值时,value: 可整体省略:number / array / timeseries /
+# table / logs。map 不可省略 —— 对象含多个字段,不指定字段名存在歧义。
+#
+# ── 组件可接受的源类型 ──────────────────────────────────────────────────────
+#
+#   text                         全部类型(读原文,或读配置里的 text: 模板)
+#   stat / gauge / chart / bar   number | array | timeseries | map
+#   table                        table
+#   logs                         logs
+#
+# ── 源名在模板中的写法 ──────────────────────────────────────────────────────
+#
+# 源名同时是模板字段名。Go 模板的字段名不接受 "-",故源名使用下划线:
+# {{.disk_mounts}} 有效,{{.disk-mounts}} 为语法错误。
+#
+# ── 主题与配色 ──────────────────────────────────────────────────────────────
+#
+# theme 是顶层键,一处切换整块看板的配色;不写 = default。名字写错时启动即退出,
+# 报错里列出全部可用名。
+#
+#   default    终端 256 色号,随终端自身配色
+#   dracula    深底高饱和
+#   gruvbox    深暖底
+#   nord       低饱和蓝灰
+#   light      浅底,配色取深色号
+#
+# 行标题的 color: / bg: 与面板的 color: 都接受三种色值:预设名 / 256 色号 / #hex。
+# 预设名共 12 个,按顺序为:
+#
+#   red  orange  amber  yellow  green  teal  cyan  blue  violet  magenta  pink  grey
+#
+# 预设名随主题联动:同一批名字在每套主题下取适配该底色的值(浅色主题取深色号)。
+# 名字不认识时回退默认色,不报错。
+#
+# ── 本文件的版面 ─────────────────────────────────────────────────────────────
+#
+# 七种类型、七种组件均有示例,共五行:概览、趋势(chart)、柱状与单值(bar/stat)、
+# 主机信息与挂载点与进程表并排、实时日志。另有两块面板(cal、weather)连同其源一并注释掉。
+# 面板只写它演示的键,其余可选属性以注释列在旁边,取消注释即可使用;字段全表见 README。
+# theme: dracula        # 顶层配色预设,见上「主题与配色」;不写 = default
+poll_interval: 500ms
+
+sources:
+  # 生效的源全部为真实系统数据:scripts/sys_*.sh 与两条内联命令。
+  #
+  # 一个源只能声明一种类型,故同一脚本的不同输出、同一份 loadavg 的不同形状各自声明
+  # 为一个源;多字段的 map 源可由各 widget 用 value: 分别取用,一个源服务多个面板。
+  - name: cpu
+    type: map
+    cmd: ./scripts/sys_cpu.sh
+    interval: 2s
+    timeout: 4s         # 取数超时,默认 min(interval, 5s);两次采样约 1.1s,故放宽
+    history_cap: 80     # 图表序列长度,默认 60
+  - name: cpu_hist      # 同一脚本的 history 输出:每行 "<Unix 秒> <CPU%>",横轴为真实时间
+    type: timeseries
+    cmd: ./scripts/sys_cpu.sh history
+    interval: 6s        # 四次采样约 3s
+    timeout: 6s
+  - name: load_num      # 内联命令,无需单独的脚本文件
+    type: number        # 本帧一个数值,时间戳由程序生成
+    cmd: "sysctl -n vm.loadavg | awk '{print $2}'"
+    interval: 5s
+  - name: load_arr      # 同一份 loadavg,另按 array 声明一次
+    type: array         # 本帧一批数值,无时间轴,x 轴为序号
+    cmd: "sysctl -n vm.loadavg | tr -d '{}' | awk '{for (i = 1; i <= NF; i++) print $i}'"
+    interval: 5s
+  - name: mem
+    type: map
+    cmd: ./scripts/sys_mem.sh
+    interval: 3s
+  - name: disk               # 脚本默认输出:总体占用,每行 "键: 值"
+    type: map
+    cmd: ./scripts/sys_disk.sh
+    interval: 10s
+  - name: disk_mounts        # 脚本 mounts 输出:制表符分隔的表,列名取自首行表头
+    type: table
+    cmd: ./scripts/sys_disk.sh mounts
+    interval: 10s
+    # header: true           # 首行是否为表头,默认 true;false 则首行也计入数据,列名为 col_1..col_N
+  - name: net
+    type: map
+    cmd: ./scripts/sys_net.sh
+    interval: 5s        # 脚本内部两次采样相隔 1s
+  - name: proc
+    type: table         # ps 直接输出一张规整的表
+    cmd: ./scripts/sys_proc.sh
+    interval: 5s        # 可带一个参数:进程条数,默认 7
+  - name: host
+    type: text          # 脚本输出为多行文本,无结构
+    cmd: ./scripts/sys_host.sh
+    interval: 10s
+  - name: syslog
+    type: logs          # /usr/bin/log stream 的实时事件流,时间与级别由脚本转换为规范格式
+    cmd: ./scripts/sys_log.sh
+    interval: 5s        # stream 自带 3 秒窗口
+    log_cap: 200        # 滚动缓冲容量,默认 200
+
+  # 当月日历,默认注释掉,与第 4 行的 cal 面板一并取消注释。
+  # - name: cal
+  #   type: text          # 脚本输出为整块多行文本,无结构
+  #   cmd: ./scripts/cal.sh
+  #   interval: 10m       # 月历只在跨日时变化
+
+  # 默认注释掉,与上方的 cal 并列。map 源,走 wttr.in,需联网。
+  # - name: weather
+  #   type: map
+  #   cmd: ./scripts/weather.sh
+  #   interval: 10m       # 观测值本身约每小时才更新
+  #   timeout: 20s        # 公共实例响应慢,默认 min(interval, 5s) 偏紧
+
+layout:
+  # 只有 title、没有 widgets 的行为独立标题带,绘制在屏幕最上方
+  - title: 'DashBoard'
+    title_align: center   # 行标题对齐:left|center|right,默认 left
+    color: '#f8f8f2'      # 标题文字色(预设名/色号/#hex),空 = 随主题
+    bg: '#44475a'         # 标题底色:整行铺为一条色带,文字浮于其上;空 = 不铺底
+
+  # ═══ 1) 概览:text(模板)+ stat + gauge ═══
+  - title: Overview
+    title_align: left
+    widgets:
+      # cpu 为 map 源:title 与 text 中用模板取值,面板内容由模板拼出
+      - type: text
+        source: cpu
+        title: 'CPU {{printf "%.0f" (def .cpu 0.0)}}%'
+        text: 'load 1m/5m/15m: {{printf "%.1f" (def .load1 0.0)}}/{{printf "%.1f" (def .load5 0.0)}}/{{printf "%.1f" (def .load15 0.0)}}'
+      # 默认注释掉,与上面的 weather 源一并取消注释。
+      # - type: text
+      #   source: weather
+      #   title: Weather · Beijing
+      #   text: '{{.icon}} {{.desc}} · {{.temp_c}}°C(体感 {{.feels_like_c}}) · 湿度 {{.humidity}}% · 风 {{.wind}}'
+      # stat:显示一个数值;format 为 Sprintf 模板,可把多个字段拼入主数值行
+      - type: stat
+        source: mem
+        value: '{{.used_pct}}'   # map 源必须指定字段
+        format: '{{printf "%.1f" .used_pct}}% · free {{.free_mb}}MB'
+        title: Memory
+      # gauge:进度条,min/max 决定填充比例
+      - type: gauge
+        source: disk
+        value: '{{.used_pct}}'
+        min: 0
+        max: 100
+        title: Disk
+      # title_align:该面板顶边框标题的对齐:right|left,默认 center
+      - type: stat
+        source: net
+        value: '{{.rx_kbs}}'
+        format: "%.0f KB/s"
+        title_align: right
+        title: ↓ Net
+      - type: stat
+        source: net
+        value: '{{.tx_kbs}}'
+        format: "%.0f KB/s"
+        title_align: left
+        title: ↑ Net
+
+  # ═══ 2) chart:一条序列绘制为折线;三种源类型均可,差别在横轴 ═══
+  - title: Trends
+    title_align: left
+    widgets:
+      # timeseries 源:时刻由脚本提供,横轴为真实时间,x_format 定制刻度格式
+      - type: chart
+        source: cpu_hist
+        title: CPU %
+        x_format: "15:04:05"  # 时间轴刻度格式,空 = 按窗口跨度自动选择粒度
+        # style: braille      # braille|dots|line,默认 braille(盲文折线,亚像素平滑)
+        # height: 8           # 面板高度,默认按行自适应
+      # map 源:各数值字段跨帧累积,value: 指定一个字段即得一条曲线
+      - type: chart
+        source: mem
+        value: '{{.used_pct}}'
+        title: Memory %
+        style: dots           # 每个采样点标注 ●,便于读取具体值
+      # number 源:每帧一个采样点,时间戳由程序生成;与 timeseries 的差别仅在时间戳来源
+      - type: chart
+        source: load_num
+        title: Load 1m
+        # y_format: "%.1f"    # y 轴刻度格式
+        # color: '#8be9fd'
+
+  # ═══ 3) bar / stat:bar 绘制"本帧的一批数",stat 显示"本帧的一个数" ═══
+  - title: Bars & Numbers
+    title_align: left
+    widgets:
+      # array 源:三个点位于同一帧,横轴只能为序号,故用 labels 为每个点命名
+      - type: bar
+        source: load_arr
+        title: Load average
+        labels: ['1m', '5m', '15m']
+        style: hbar           # hbar|solid|vbar,默认 hbar(每采样一行,行首为名称)
+        # max: 16             # 定标上限,默认取本窗口峰值
+      # timeseries 源:按时间从左到右(最新在右);vbar 需给出 max 定标
+      - type: bar
+        source: cpu_hist
+        title: CPU %
+        style: vbar
+        max: 100
+        height: 5             # 内容行数,默认按行自适应
+      - type: stat
+        source: load_num
+        title: Load
+        format: "%.2f"        # Sprintf
+        label: 1m             # 主数值上方的小字,默认不显示
+      # text 面板读取原始输出,不做解析
+      - type: text
+        source: load_arr
+        title: Load (raw)
+        # wrap: true          # 超宽自动折行(面板随之变高);默认截断并以 … 结尾
+
+  # ═══ 4) text + table ×2:三块并排一行 ═══
+  #    width: 面板含边框占用的列数;不写则弹性平分整行宽度。定宽之和超出终端宽度时按
+  #    比例缩放,故窄终端上表现为列被截断,而非整行错乱。本行未设 height,高度按内容自适应。
+  - title: Host, Mounts & Processes
+    widgets:
+      - type: text
+        source: host
+        title: Host Info
+        width: 48
+        max_lines: 8          # 内容最多几行(取末尾);面板高度 = 内容行数 + 上下边框
+      # 默认注释掉,与上面的 cal 源一并取消注释。
+      # - type: text
+      #   source: cal
+      #   title: Calendar
+      #   width: 24           # cal 内容恰好 20 列(星期名为双宽字符)
+      #   max_lines: 8        # cal 恒为 8 行
+      # table 的产出即为该表,故 value: 省略;不写 columns 则按源给出的表头列序自动列出
+      - type: table
+        source: disk_mounts
+        title: Mounts
+        width: 70
+        columns:
+          - {key: mount, title: Mount, width: 20}
+          - {key: fs, title: Device}          # 不写 width 的列按内容自适应
+          - {key: size_gb, title: Size GB, width: 9}
+          - {key: used_gb, title: Used GB, width: 9}
+          - {key: use_pct, title: Used %, width: 6}
+      # 列名(pid/cpu/mem/comm)取自 scripts/sys_proc.sh 的表头行
+      - type: table
+        source: proc
+        title: Top Processes (ps)
+        width: 62
+        columns:
+          - {key: pid, title: PID, width: 6}
+          - {key: cpu, title: CPU%, width: 6}
+          - {key: mem, title: Mem%, width: 6}
+          - {key: comm, title: Command, width: 30}
+
+  # ═══ 5) logs:滚动日志,单独一行 ═══
+  #    日志面板位于最后一行时,默认吸收屏幕剩余高度以显示更多日志。本行设置了 height,
+  #    即为定高行、不再吸收,行内面板均按 10 行绘制。取数失败时缓冲中会追加一条框架
+  #    产生的 WARN 行,可在面板上看到。
+  - title: Logs
+    height: 10            # 定高行:行高(行),行内面板均按该高度绘制;0 = 按内容自适应
+    widgets:
+      - type: logs
+        source: syslog
+        title: Live Logs
+        # max_lines: 8                    # 面板最多几行(取末尾);本行已定高,无需再写
+        # time_format: "01-02 15:04:05"   # 时间列的 Go 布局(含日期),空 = 15:04:05

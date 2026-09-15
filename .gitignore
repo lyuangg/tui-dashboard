@@ -1,0 +1,19 @@
+# Go build artifacts
+/tui-dashboard
+/tui-dash
+*.exe
+*.test
+*.out
+
+# Local runs / debugging
+debug/
+*.log
+
+# Local config: `go run .` picks up ./config.yaml ahead of the config dir
+/config.yaml
+
+# Claude Code local state.
+.claude/
+
+# macOS
+.DS_Store

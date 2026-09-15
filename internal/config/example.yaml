@@ -1,0 +1,313 @@
+# tui-dashboard example config
+#
+# Usage:
+#   go run .                  auto-locate: --config → ./config.yaml → config dir → bundled example
+#   go run . --config <path>   explicit config; each cmd's working directory is the file's directory
+#   go run . --init           copy this file and scripts/ into the default config dir
+#
+# ── source types (type:, required) ─────────────────────────────────────────
+#
+# Each source declares which kind of data it produces. Each type has exactly one canonical
+# format:
+#
+#   type          script output                                  across frames
+#   ────────────────────────────────────────────────────────────────────────────────────────────────────────
+#   text          any text                                       kept as is, not parsed
+#   number        the whole output is one number                 one sample per frame (program timestamp)
+#   array         one number per line                            not accumulated; ordinal x-axis
+#   timeseries    one "<timestamp> <value>" per line             accumulated by timestamp (from the script)
+#   map           one "key: value" per line                      numeric fields accumulate; value: names one
+#   table         one record per line (header optional)          not accumulated
+#   logs          one log record per line (time/level optional)  appended to the scroll buffer (log_cap)
+#
+# When a script's output does not match any format above, the script converts it before
+# outputting (see scripts/sys_log.sh).
+#
+# ── value: when it may be omitted ───────────────────────────────────────────
+#
+# When the declared type of the source already determines the value, value: may be omitted
+# entirely: number / array / timeseries / table / logs. map cannot be omitted — the object
+# holds several fields, and not naming one leaves the choice ambiguous.
+#
+# ── source types a widget accepts ───────────────────────────────────────────
+#
+#   text                         any type (the raw text, or the config's text: template)
+#   stat / gauge / chart / bar   number | array | timeseries | map
+#   table                        table
+#   logs                         logs
+#
+# ── writing source names in templates ───────────────────────────────────────
+#
+# A source name is also the template field name. Go template field names do not accept "-",
+# so source names use underscores: {{.disk_mounts}} is valid, {{.disk-mounts}} is a syntax error.
+#
+# ── themes and colors ───────────────────────────────────────────────────────
+#
+# theme is a top-level key that switches the whole dashboard's color scheme in one place;
+# omitted = default. A misspelled name exits at startup and lists every valid name in the error.
+#
+#   default    terminal 256-color codes, follows the terminal's own colors
+#   dracula    dark background, high saturation
+#   gruvbox    dark warm background
+#   nord       low-saturation blue-grey
+#   light      light background, uses the dark color codes
+#
+# The row title's color: / bg: and a panel's color: all accept three kinds of color value:
+# preset name / 256-color code / #hex. There are 12 preset names, in order:
+#
+#   red  orange  amber  yellow  green  teal  cyan  blue  violet  magenta  pink  grey
+#
+# Preset names follow the theme: the same set of names takes the value suited to that
+# background in each theme (light themes use the dark codes). An unrecognized name falls back
+# to the default color without an error.
+#
+# ── the layout of this file ──────────────────────────────────────────────────
+#
+# All seven types and all seven widgets have examples, over five rows: overview, trends
+# (chart), bars and single values (bar/stat), host info beside mount points and the process
+# table, and live logs. Two further panels (cal, weather) are commented out with their sources.
+# A panel only writes the keys it demonstrates; the remaining optional attributes are listed
+# beside it as comments, and uncommenting them is enough to use them. The full field table is
+# in the README.
+# theme: dracula        # top-level color scheme preset, see "Themes and colors"; omitted = default
+poll_interval: 500ms
+
+sources:
+  # All active sources are real system data: scripts/sys_*.sh plus two inline commands.
+  #
+  # A source declares exactly one type, so different outputs of the same script and different
+  # shapes of the same loadavg are each declared as its own source; a multi-field map source
+  # can be read field by field by each widget via value:, so one source serves several panels.
+  - name: cpu
+    type: map
+    cmd: ./scripts/sys_cpu.sh
+    interval: 2s
+    timeout: 4s         # fetch timeout, default min(interval, 5s); two samples take about 1.1s,
+    #                     hence the wider value
+    history_cap: 80     # chart series length, default 60
+  - name: cpu_hist      # the same script's history output: one "<Unix seconds> <CPU%>" per line,
+    #                     with the x-axis on real time
+    type: timeseries
+    cmd: ./scripts/sys_cpu.sh history
+    interval: 6s        # four samples take about 3s
+    timeout: 6s
+  - name: load_num      # an inline command, no separate script file needed
+    type: number        # one value for this frame, timestamp generated by the program
+    cmd: "sysctl -n vm.loadavg | awk '{print $2}'"
+    interval: 5s
+  - name: load_arr      # the same loadavg declared a second time as an array
+    type: array         # a batch of values for this frame, no time axis, x-axis is ordinal
+    cmd: "sysctl -n vm.loadavg | tr -d '{}' | awk '{for (i = 1; i <= NF; i++) print $i}'"
+    interval: 5s
+  - name: mem
+    type: map
+    cmd: ./scripts/sys_mem.sh
+    interval: 3s
+  - name: disk               # the script's default output: overall usage, one "key: value" per line
+    type: map
+    cmd: ./scripts/sys_disk.sh
+    interval: 10s
+  - name: disk_mounts        # the script's mounts output: a tab-separated table,
+    #                           columns taken from the first row's header
+    type: table
+    cmd: ./scripts/sys_disk.sh mounts
+    interval: 10s
+    # header: true           # whether the first row is a header, default true;
+    #                           false makes every row data, with columns named col_1..col_N
+  - name: net
+    type: map
+    cmd: ./scripts/sys_net.sh
+    interval: 5s        # the script's two samples are 1s apart
+  - name: proc
+    type: table         # ps outputs a well-formed table directly
+    cmd: ./scripts/sys_proc.sh
+    interval: 5s        # takes one optional argument: the number of processes, default 7
+  - name: host
+    type: text          # the script outputs multi-line text with no structure
+    cmd: ./scripts/sys_host.sh
+    interval: 10s
+  - name: syslog
+    type: logs          # the live event stream from /usr/bin/log stream;
+    #                     the script converts time and level into the canonical format
+    cmd: ./scripts/sys_log.sh
+    interval: 5s        # stream has its own 3-second window
+    log_cap: 200        # scrolling buffer capacity, default 200
+
+  # The current month's calendar, commented out by default; uncomment with the panel in row 4.
+  # - name: cal
+  #   type: text          # the script outputs multi-line text with no structure
+  #   cmd: ./scripts/cal.sh
+  #   interval: 10m       # the month changes only at midnight
+
+  # Commented out by default, next to cal above. A map source; reads wttr.in, so it needs network.
+  # - name: weather
+  #   type: map
+  #   cmd: ./scripts/weather.sh
+  #   interval: 10m       # wttr.in's observation itself updates about hourly
+  #   timeout: 20s        # the public instance is slow; the default min(interval, 5s) is tight
+
+layout:
+  # A row with only title and no widgets is a standalone title band, drawn at the very top of
+  # the screen
+  - title: 'DashBoard'
+    title_align: center   # row title alignment: left|center|right, default left
+    color: '#f8f8f2'      # title text color (preset name / code / #hex); empty = follows the theme
+    bg: '#44475a'         # title background: the whole row as a color band with the text on top;
+    #                       empty = no background
+
+  # ═══ 1) overview: text (template) + stat + gauge ═══
+  - title: Overview
+    title_align: left
+    widgets:
+      # cpu is a map source: title and text take values through templates, and the templates
+      # build the panel content
+      - type: text
+        source: cpu
+        title: 'CPU {{printf "%.0f" (def .cpu 0.0)}}%'
+        text: 'load 1m/5m/15m: {{printf "%.1f" (def .load1 0.0)}}/{{printf "%.1f" (def .load5 0.0)}}/{{printf "%.1f" (def .load15 0.0)}}'
+      # Commented out by default, with the weather source above.
+      # - type: text
+      #   source: weather
+      #   title: Weather · Beijing
+      #   text: '{{.icon}} {{.desc}} · {{.temp_c}}°C (feels {{.feels_like_c}}) · humidity {{.humidity}}% · wind {{.wind}}'
+      # stat: shows one number; format is a Sprintf template that can join several
+      # fields into the main value line
+      - type: stat
+        source: mem
+        value: '{{.used_pct}}'   # a map source must name the field
+        format: '{{printf "%.1f" .used_pct}}% · free {{.free_mb}}MB'
+        title: Memory
+      # gauge: a progress bar; min/max decide the fill ratio
+      - type: gauge
+        source: disk
+        value: '{{.used_pct}}'
+        min: 0
+        max: 100
+        title: Disk
+      # title_align: alignment of this panel's top-border title: right|left, default center
+      - type: stat
+        source: net
+        value: '{{.rx_kbs}}'
+        format: "%.0f KB/s"
+        title_align: right
+        title: ↓ Net
+      - type: stat
+        source: net
+        value: '{{.tx_kbs}}'
+        format: "%.0f KB/s"
+        title_align: left
+        title: ↑ Net
+
+  # ═══ 2) chart: one series drawn as a line; all three source types work, the x-axis differs ═══
+  - title: Trends
+    title_align: left
+    widgets:
+      # timeseries source: the instants come from the script and the x-axis is real time;
+      # x_format customizes the tick format
+      - type: chart
+        source: cpu_hist
+        title: CPU %
+        x_format: "15:04:05"  # time-axis tick format; empty = pick the granularity by window span
+        # style: braille      # braille|dots|line, default braille (polyline, subpixel-smooth)
+        # height: 8           # panel height, by default auto-sized to the row
+      # map source: each numeric field accumulates across frames; naming one field with
+      # value: gives one curve
+      - type: chart
+        source: mem
+        value: '{{.used_pct}}'
+        title: Memory %
+        style: dots           # each sampling point is marked ●, making the value easy to read
+      # number source: one sample per frame with a program-generated timestamp; the only
+      # difference from timeseries is where the timestamp comes from
+      - type: chart
+        source: load_num
+        title: Load 1m
+        # y_format: "%.1f"    # y-axis tick format
+        # color: '#8be9fd'
+
+  # ═══ 3) bar / stat: bar draws this frame's batch of values, stat shows this frame's value ═══
+  - title: Bars & Numbers
+    title_align: left
+    widgets:
+      # array source: the three points share one frame and the x-axis can only be an ordinal,
+      # so labels name each point
+      - type: bar
+        source: load_arr
+        title: Load average
+        labels: ['1m', '5m', '15m']
+        style: hbar           # hbar|solid|vbar, default hbar (one line per sample, name first)
+        # max: 16             # upper bound of the scale, default is this window's peak
+      # timeseries source: left to right in time (newest on the right); vbar needs max to scale
+      - type: bar
+        source: cpu_hist
+        title: CPU %
+        style: vbar
+        max: 100
+        height: 5             # content lines, by default auto-sized to the row
+      - type: stat
+        source: load_num
+        title: Load
+        format: "%.2f"        # Sprintf
+        label: 1m             # small text above the main value, hidden by default
+      # a text panel reads the raw output without parsing it
+      - type: text
+        source: load_arr
+        title: Load (raw)
+        # wrap: true          # over-wide lines wrap (the panel grows); default truncates with …
+
+  # ═══ 4) text + table ×2: three blocks side by side in one row ═══
+  #    width: the number of columns a panel occupies including its border; omitted, the row is
+  #    split elastically. When the fixed widths exceed the terminal width they are scaled
+  #    proportionally, so on a narrow terminal columns are truncated rather than the row
+  #    breaking apart. This row sets no height, so it auto-sizes to content.
+  - title: Host, Mounts & Processes
+    widgets:
+      - type: text
+        source: host
+        title: Host Info
+        width: 48
+        max_lines: 8          # the panel shows at most this many lines (from the tail); panel height = content lines + top and bottom borders
+      # Commented out by default, with the cal source above.
+      # - type: text
+      #   source: cal
+      #   title: Calendar
+      #   width: 24           # cal's content is exactly 20 columns (the weekday names are double-width)
+      #   max_lines: 8        # cal is always 8 lines
+      # a table's output is the table itself, so value: is omitted; without columns they are
+      # listed automatically in the header column order the source gives
+      - type: table
+        source: disk_mounts
+        title: Mounts
+        width: 70
+        columns:
+          - {key: mount, title: Mount, width: 20}
+          - {key: fs, title: Device}          # a column without width auto-sizes to its content
+          - {key: size_gb, title: Size GB, width: 9}
+          - {key: used_gb, title: Used GB, width: 9}
+          - {key: use_pct, title: Used %, width: 6}
+      # the column names (pid/cpu/mem/comm) come from the header row of scripts/sys_proc.sh
+      - type: table
+        source: proc
+        title: Top Processes (ps)
+        width: 62
+        columns:
+          - {key: pid, title: PID, width: 6}
+          - {key: cpu, title: CPU%, width: 6}
+          - {key: mem, title: Mem%, width: 6}
+          - {key: comm, title: Command, width: 30}
+
+  # ═══ 5) logs: a scrolling log, on its own row ═══
+  #    A log panel on the last row absorbs the screen's remaining height by default, so it can
+  #    show more logs. This row sets height, making it fixed-height with no absorption, and
+  #    every panel in it is drawn at 10 lines. When fetching data fails, a WARN line produced
+  #    by the framework is appended to the buffer and becomes visible on the panel.
+  - title: Logs
+    height: 10            # fixed-height row: the row height in lines;
+    #                       every panel in the row is drawn at it; 0 = auto-size to content
+    widgets:
+      - type: logs
+        source: syslog
+        title: Live Logs
+        # max_lines: 8                    # panel shows at most this many lines (from the tail);
+        #                                   unneeded here, the row is fixed-height
+        # time_format: "01-02 15:04:05"   # Go layout of the time column with a date; empty = 15:04:05
