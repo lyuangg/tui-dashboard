@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"math"
 	"sort"
 	"strings"
@@ -43,15 +44,21 @@ func frame(w config.Widget, title, body string, cw, ch int) string {
 // object with several fields that does not line up into columns; to inspect one object,
 // use text.
 //
+// heatmap accepts only timeseries: it aggregates points by calendar day, which needs a dated
+// observation per point. Only timeseries carries timestamps the script chose — a number / map
+// history is stamped once per frame at the sampling interval, so summing it into day totals
+// measures the sampling, not the day; an array has no time at all.
+//
 // text and logs are absent from this table: text accepts every type (reads the raw text
 // or a text: template), logs accepts only logs.
 var widgetAccepts = map[string][]source.Type{
-	"stat":  {source.TypeNumber, source.TypeArray, source.TypeTimeseries, source.TypeMap},
-	"gauge": {source.TypeNumber, source.TypeArray, source.TypeTimeseries, source.TypeMap},
-	"chart": {source.TypeNumber, source.TypeArray, source.TypeTimeseries, source.TypeMap},
-	"bar":   {source.TypeNumber, source.TypeArray, source.TypeTimeseries, source.TypeMap},
-	"table": {source.TypeTable},
-	"logs":  {source.TypeLogs},
+	"stat":    {source.TypeNumber, source.TypeArray, source.TypeTimeseries, source.TypeMap},
+	"gauge":   {source.TypeNumber, source.TypeArray, source.TypeTimeseries, source.TypeMap},
+	"chart":   {source.TypeNumber, source.TypeArray, source.TypeTimeseries, source.TypeMap},
+	"bar":     {source.TypeNumber, source.TypeArray, source.TypeTimeseries, source.TypeMap},
+	"heatmap": {source.TypeTimeseries},
+	"table":   {source.TypeTable},
+	"logs":    {source.TypeLogs},
 }
 
 // The two fixed strings are named separately so the width-budget test (width_test.go)
@@ -82,6 +89,8 @@ func renderWidget(w config.Widget, v source.SourceView, cw, ch int) string {
 		s = renderChart(v, w, cw, ch)
 	case "bar":
 		s = renderBar(v, w, cw, ch)
+	case "heatmap":
+		s = renderHeatmap(v, w, cw, ch)
 	case "gauge":
 		s = renderGauge(v, w, cw, ch)
 	case "table":
@@ -859,6 +868,234 @@ func barValue(f float64, format string) string {
 		return fmt.Sprintf("%d", int64(f))
 	}
 	return fmt.Sprintf("%.1f", f)
+}
+
+// —— heatmap: one cell per day, the last 52 weeks ——
+
+const (
+	heatWeeks      = 52   // columns: weeks, oldest on the left
+	heatRows       = 7    // rows: the days of a week, in time.Weekday order (Sunday first)
+	heatLevels     = 3    // levels of the color ramp: no data, then two steps up to the fullest day
+	heatCell       = '■'  // every cell carries the same glyph; the color alone carries the level
+	heatCellW      = 2    // columns per cell: the square plus one column of air on its right
+	heatEmptyShift = 0.35 // how far an empty cell's color is pushed toward the theme's background
+)
+
+// heatMonths are the month labels above the grid (time.Month order).
+var heatMonths = [12]string{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
+
+// renderHeatmap draws a series as a calendar heatmap: heatWeeks columns of weeks (oldest on
+// the left) × heatRows rows of weekdays, the last column being the week containing today, so
+// the window rolls forward with the clock (52 weeks = 364 days, "one year"). One cell per day,
+// heatCellW columns wide, its level from that day's value.
+//
+// Points are aggregated into local calendar days and summed — the panel answers "how much
+// happened that day". A script emitting one point per day is used as is; several points a day
+// contribute their sum. Points outside the window are dropped. Days after today are left blank
+// rather than drawn as "no data": they have not happened, and the current week would otherwise
+// look like a gap at the right edge.
+//
+// The level scale is widget.max (fixed when >0), otherwise the window's largest day is full
+// scale — the same rule as bar. Every cell carries the same glyph across heatCellW columns: the
+// square fills one of them and the next is air, which brings the gap left and right of a square
+// up to roughly the line spacing a font leaves above and below its ink. The level shows in the
+// color alone (see heatShades).
+//
+// The window's points are only as long as the source's history_cap: a year needs about 370 of
+// them, so a source feeding this panel raises history_cap (at the default 60 the grid shows
+// about two months and the rest stays at no-data).
+func renderHeatmap(v source.SourceView, w config.Widget, cw, ch int) string {
+	val, ok := source.Resolve(v, w.Value)
+	var pts []source.Point
+	if ok {
+		pts, ok = source.ToPoints(val)
+	}
+	if !ok {
+		return msgPanel(w, v, noValueMsg(w, v), cw, ch)
+	}
+
+	now := time.Now()
+	start := heatWindow(now)
+	sums, peak := heatSums(pts, start)
+	today := int(dayNo(now) - dayNo(start)) // index of today's cell; later cells are blank
+	scale := w.Max
+	if scale <= 0 {
+		scale = peak
+	}
+
+	// Content usable width = cw-4 (border 2 + padding 2), degrading to cw-2 in a very narrow
+	// panel (as in bar). The weekday names take the 4 leftmost columns (3 for the name + 1
+	// gap); when the panel cannot hold both them and the grid, the names give way first — the
+	// grid is the substance.
+	innerW := cw - 4
+	if innerW < 2 {
+		innerW = cw - 2
+	}
+	gutter := 4
+	if innerW < gutter+heatWeeks*heatCellW {
+		gutter = 0
+	}
+
+	shades := make([]lipgloss.Style, heatLevels)
+	for i, c := range heatShades() {
+		shades[i] = lipgloss.NewStyle().Foreground(c)
+	}
+
+	lines := []string{strings.Repeat(" ", gutter) + heatMonthLabels(start)}
+	for r := 0; r < heatRows; r++ {
+		// Only every other row carries a name (Sunday-first, so rows 1/3/5 are Mon/Wed/Fri);
+		// an unlabeled row keeps the gutter blank.
+		prefix := strings.Repeat(" ", gutter)
+		if gutter > 0 && r%2 == 1 {
+			prefix = padRight(time.Weekday(r).String()[:3], gutter-1) + " "
+		}
+		// level of the cell in column c; -1 is a day that has not happened yet, drawn blank
+		level := func(c int) int {
+			i := c*heatRows + r
+			if i > today {
+				return -1
+			}
+			return heatLevel(sums[i], scale)
+		}
+		// Consecutive cells of the same level are written as one styled run, keeping the
+		// escape sequences of a 52-week line down to a handful.
+		var sb strings.Builder
+		for c := 0; c < heatWeeks; {
+			lv := level(c)
+			j := c + 1
+			for j < heatWeeks && level(j) == lv {
+				j++
+			}
+			ch := heatCell
+			if lv < 0 {
+				ch = ' ' // nothing to color
+			}
+			unit := string(ch) + strings.Repeat(" ", heatCellW-1)
+			run := strings.Repeat(unit, j-c)
+			if lv < 0 {
+				sb.WriteString(run)
+			} else {
+				sb.WriteString(shades[lv].Render(run))
+			}
+			c = j
+		}
+		lines = append(lines, prefix+sb.String())
+	}
+	return frame(w, panelTitle(w, v.Doc), fitLines(strings.Join(lines, "\n"), cw-2), cw, 0)
+}
+
+// heatShades returns the heatLevels cell colors, from a day with nothing on it up to a full
+// day. Every cell carries the same glyph, so the ramp is the only thing telling the levels
+// apart; it is a blend from the empty-cell color (see heatEmpty) to the theme's heatmap accent,
+// so each theme's background is respected and a color: on the panel shifts the whole ramp.
+func heatShades() []color.Color {
+	return lipgloss.Blend1D(heatLevels, heatEmpty(), widgetColor("heatmap"))
+}
+
+// heatEmpty returns the color of a day with nothing on it: the theme's dim grey — the no-data
+// color everywhere else on the dashboard — moved heatEmptyShift of the way to that theme's own
+// background, so an empty day recedes instead of reading as a low value. The direction follows the
+// guide's own brightness, since a pale guide means a pale background: a light theme needs its
+// empty cells paler, not darker. The move is a mix toward black or white rather than the theme
+// package's Darken/Lighten, which add a flat fraction of full scale and would saturate a light
+// theme's empty cells to pure white.
+func heatEmpty() color.Color {
+	g := lipgloss.Color(cur.Guide)
+	r, gg, b, _ := g.RGBA()
+	bg := uint32(0) // the background each channel is mixed toward: black, or white on a light theme
+	if (r+gg+b)/3 > 0x8000 {
+		bg = 0xffff
+	}
+	mix := func(c uint32) uint8 {
+		return uint8((float64(c) + (float64(bg)-float64(c))*heatEmptyShift) / 257)
+	}
+	return color.RGBA{R: mix(r), G: mix(gg), B: mix(b), A: 0xff}
+}
+
+// heatWindow returns the Sunday the window starts with: the first of heatWeeks columns whose
+// last one is the week containing ref. AddDate rather than a duration, so a DST transition
+// inside the window cannot shift the day boundaries.
+func heatWindow(ref time.Time) time.Time {
+	y, m, d := ref.Date()
+	day := time.Date(y, m, d, 0, 0, 0, 0, ref.Location())
+	// back to this week's Sunday, then heatWeeks-1 further weeks (heatRows days each)
+	return day.AddDate(0, 0, -int(day.Weekday())-heatRows*(heatWeeks-1))
+}
+
+// heatSums aggregates the points into the window's cells (index = week*heatRows + weekday)
+// and returns the largest day. Timestamps are folded into local calendar days: the panel
+// shows days, and a day is a local concept. A point outside the window is dropped. A point
+// without a timestamp cannot be placed on a calendar and is dropped as well.
+func heatSums(pts []source.Point, start time.Time) ([]float64, float64) {
+	sums := make([]float64, heatWeeks*heatRows)
+	base := dayNo(start)
+	peak := 0.0
+	for _, p := range pts {
+		if p.TS.IsZero() {
+			continue
+		}
+		i := int(dayNo(p.TS) - base)
+		if i < 0 || i >= len(sums) {
+			continue
+		}
+		sums[i] += p.V
+		if sums[i] > peak {
+			peak = sums[i]
+		}
+	}
+	return sums, peak
+}
+
+// dayNo is the number of the local calendar day a time falls on, counted from the epoch. The
+// date is anchored at noon before being converted, so a DST transition inside the day cannot
+// push the result onto a neighbour.
+func dayNo(t time.Time) int64 {
+	y, m, d := t.Date()
+	return time.Date(y, m, d, 12, 0, 0, 0, t.Location()).Unix() / 86400
+}
+
+// heatLevel maps a day's value onto the ramp index: 0 for a day with nothing on it (or a
+// non-positive value), 1..heatLevels-1 by how close it comes to scale. The scale is divided
+// into equal bands, so any non-zero value is visible even when it is small next to the peak.
+func heatLevel(v, scale float64) int {
+	if v <= 0 || scale <= 0 {
+		return 0
+	}
+	return min(max(int(math.Ceil(v/scale*float64(heatLevels-1))), 1), heatLevels-1)
+}
+
+// heatMonthLabels lays the month names over the grid's first line: a cell is labeled when the
+// week it holds contains the 1st of a month. A name that would run into the previous one is
+// dropped; month boundaries are at least four weeks apart, so that only happens at the window's
+// left edge. The result is exactly heatWeeks*heatCellW columns wide, a name starting on the
+// first column of its week's cell.
+func heatMonthLabels(start time.Time) string {
+	out := make([]rune, heatWeeks*heatCellW)
+	for i := range out {
+		out[i] = ' '
+	}
+	prevEnd := 0 // right edge of the names written so far, in columns
+	for c := 0; c < heatWeeks; c++ {
+		day := start.AddDate(0, 0, c*heatRows)
+		name := ""
+		for k := 0; k < heatRows; k++ {
+			if d := day.AddDate(0, 0, k); d.Day() == 1 {
+				name = heatMonths[d.Month()-1]
+				break
+			}
+		}
+		at := c * heatCellW
+		if name == "" || at < prevEnd {
+			continue
+		}
+		for k, r := range name {
+			if at+k < len(out) {
+				out[at+k] = r
+			}
+		}
+		prevEnd = at + len(name) + 1 // +1: at least one blank column between two names
+	}
+	return string(out)
 }
 
 // —— gauge: a text progress bar ——

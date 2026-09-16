@@ -286,6 +286,7 @@ func TestCheckWidgetTypes(t *testing.T) {
 		{"number 源喂 chart", "number", "chart", false},
 		{"array 源喂 bar", "array", "bar", false},
 		{"timeseries 源喂 chart", "timeseries", "chart", false},
+		{"timeseries 源喂 heatmap", "timeseries", "heatmap", false},
 		{"table 源喂 table", "table", "table", false},
 		{"logs 源喂 logs", "logs", "logs", false},
 		{"text 面板读什么源都行", "table", "text", false},
@@ -298,6 +299,7 @@ func TestCheckWidgetTypes(t *testing.T) {
 		{"array 源喂 table", "array", "table", true},
 		{"logs 源喂 stat", "logs", "stat", true},
 		{"map 源喂 logs", "map", "logs", true},
+		{"array 源喂 heatmap", "array", "heatmap", true},
 		{"text 源喂 gauge", "text", "gauge", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -394,7 +396,7 @@ func TestBundledExampleCoversEveryType(t *testing.T) {
 			seenWidget[w.Type] = true
 		}
 	}
-	for _, name := range []string{"stat", "chart", "bar", "gauge", "table", "logs", "text"} {
+	for _, name := range []string{"stat", "chart", "bar", "gauge", "heatmap", "table", "logs", "text"} {
 		if !seenWidget[name] {
 			t.Errorf("内置 example 缺一个 type: %s 的面板", name)
 		}

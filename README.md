@@ -152,6 +152,7 @@ Widget fields: `type` `source` `value` `title` `title_align` `color` `style` `fo
 | `gauge` | one number as a bar between `min` and `max` | `number` `array` `timeseries` `map` |
 | `chart` | a series as a line (`style`: `braille` \| `dots` \| `line`) | `number` `array` `timeseries` `map` |
 | `bar` | a series as bars (`style`: `hbar` \| `solid` \| `vbar`) | `number` `array` `timeseries` `map` |
+| `heatmap` | a year of daily values, one cell per day | `timeseries` |
 | `table` | records as a table (`columns` sets the columns) | `table` |
 | `logs` | a scrolling log buffer (`log_cap` lines deep) | `logs` |
 | `text` | the raw output of the source, or a static `text:` string | all |
@@ -160,6 +161,15 @@ A widget renders the parsed value above, selected by `value:` — not the script
 `stat` and `gauge` take the last value of what they are given, while `chart` and `bar` draw the
 whole series; both read the same resolved value, so one source can serve several panels. `table`
 and `logs` render one shape each and accept one source type; `text` accepts every type.
+
+`heatmap` draws a rolling 52 weeks, one cell per local calendar day — weeks left to right,
+weekdays top to bottom, days after today left blank. Points landing on the same day are summed,
+so a script emitting one point per day is used as is. `max:` fixes the value of a full cell (by
+default the window's busiest day); the level shows in the color alone.
+
+It takes only a `timeseries` source, and its `history_cap` wants about 370 points for a full
+year (at the default 60 the grid fills about two months). The grid is 112 columns, so it needs
+a row of its own.
 
 ### `value:`
 

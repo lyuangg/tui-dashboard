@@ -214,7 +214,8 @@ func (cfg *Config) validate() error {
 	// widgets
 	validTypes := map[string]bool{
 		"stat": true, "chart": true, "table": true,
-		"logs": true, "gauge": true, "bar": true, "text": true,
+		"logs": true, "gauge": true, "bar": true, "heatmap": true,
+		"text": true,
 	}
 	// value: is not validated here. Whether it may be omitted depends on the type: declared by
 	// the source, and the semantics of a type belong to the source package; the reverse import

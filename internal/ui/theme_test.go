@@ -45,7 +45,7 @@ func TestDefaultThemeValues(t *testing.T) {
 	}
 	wantWidget := map[string]string{
 		"stat": "63", "chart": "33", "bar": "75", "gauge": "36",
-		"table": "208", "logs": "33", "text": "240",
+		"heatmap": "40", "table": "208", "logs": "33", "text": "240",
 	}
 	if !reflect.DeepEqual(d.Widget, wantWidget) {
 		t.Errorf("widget 表 = %v, 期望 %v", d.Widget, wantWidget)
@@ -62,7 +62,7 @@ func TestDefaultThemeValues(t *testing.T) {
 }
 
 func TestPresetThemesComplete(t *testing.T) {
-	// Every preset must supply all 7 widget colors and all named colors; an identical key set is
+	// Every preset must supply all 8 widget colors and all named colors; an identical key set is
 	// what allows swapping the skin as a whole.
 	for _, name := range ThemeNames() {
 		var th Theme

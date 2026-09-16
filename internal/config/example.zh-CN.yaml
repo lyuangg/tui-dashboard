@@ -30,6 +30,7 @@
 #
 #   text                         全部类型(读原文,或读配置里的 text: 模板)
 #   stat / gauge / chart / bar   number | array | timeseries | map
+#   heatmap                      timeseries
 #   table                        table
 #   logs                         logs
 #
@@ -59,8 +60,9 @@
 #
 # ── 本文件的版面 ─────────────────────────────────────────────────────────────
 #
-# 七种类型、七种组件均有示例,共五行:概览、趋势(chart)、柱状与单值(bar/stat)、
-# 主机信息与挂载点与进程表并排、实时日志。另有两块面板(cal、weather)连同其源一并注释掉。
+# 七种类型、八种组件均有示例,共六行:概览、趋势(chart)、柱状与单值(bar/stat)、
+# 一年的逐日数值(heatmap)、主机信息与挂载点与进程表并排、实时日志。另有两块面板
+# (cal、weather)连同其源一并注释掉。
 # 面板只写它演示的键,其余可选属性以注释列在旁边,取消注释即可使用;字段全表见 README。
 # theme: dracula        # 顶层配色预设,见上「主题与配色」;不写 = default
 poll_interval: 500ms
@@ -119,6 +121,11 @@ sources:
     cmd: ./scripts/sys_log.sh
     interval: 5s        # stream 自带 3 秒窗口
     log_cap: 200        # 滚动缓冲容量,默认 200
+  - name: daily_year    # 示例数据(scripts/demo_year.sh),仅供 heatmap 面板演示
+    type: timeseries    # 一整年约需 370 个点
+    cmd: ./scripts/demo_year.sh
+    interval: 1h        # 数值按天固定,故整张图逐日变化
+    history_cap: 400    # 用默认的 60 则只能填满最近两个月
 
   # 当月日历,默认注释掉,与第 4 行的 cal 面板一并取消注释。
   # - name: cal
@@ -234,7 +241,19 @@ layout:
         title: Load (raw)
         # wrap: true          # 超宽自动折行(面板随之变高);默认截断并以 … 结尾
 
-  # ═══ 4) text + table ×2:三块并排一行 ═══
+  # ═══ 4) heatmap:最近 52 周,每天一格 ═══
+  #    heatmap 把 timeseries 源的点按本地日历日归并,同一天的点求和。
+  #    每天占两列,网格共 112 列,需要单独占一行。
+  - title: Year
+    title_align: left
+    widgets:
+      - type: heatmap
+        source: daily_year
+        title: Activity (last 52 weeks)
+        # max: 100            # 满格对应的数值,默认取本窗口内最大的一天
+        # color: '#8be9fd'
+
+  # ═══ 5) text + table ×2:三块并排一行 ═══
   #    width: 面板含边框占用的列数;不写则弹性平分整行宽度。定宽之和超出终端宽度时按
   #    比例缩放,故窄终端上表现为列被截断,而非整行错乱。本行未设 height,高度按内容自适应。
   - title: Host, Mounts & Processes
@@ -272,7 +291,7 @@ layout:
           - {key: mem, title: Mem%, width: 6}
           - {key: comm, title: Command, width: 30}
 
-  # ═══ 5) logs:滚动日志,单独一行 ═══
+  # ═══ 6) logs:滚动日志,单独一行 ═══
   #    日志面板位于最后一行时,默认吸收屏幕剩余高度以显示更多日志。本行设置了 height,
   #    即为定高行、不再吸收,行内面板均按 10 行绘制。取数失败时缓冲中会追加一条框架
   #    产生的 WARN 行,可在面板上看到。

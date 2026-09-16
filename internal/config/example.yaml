@@ -33,6 +33,7 @@
 #
 #   text                         any type (the raw text, or the config's text: template)
 #   stat / gauge / chart / bar   number | array | timeseries | map
+#   heatmap                      timeseries
 #   table                        table
 #   logs                         logs
 #
@@ -63,9 +64,10 @@
 #
 # ── the layout of this file ──────────────────────────────────────────────────
 #
-# All seven types and all seven widgets have examples, over five rows: overview, trends
-# (chart), bars and single values (bar/stat), host info beside mount points and the process
-# table, and live logs. Two further panels (cal, weather) are commented out with their sources.
+# All seven types and all eight widgets have examples, over six rows: overview, trends
+# (chart), bars and single values (bar/stat), a year of daily values (heatmap), host info
+# beside mount points and the process table, and live logs. Two further panels (cal, weather)
+# are commented out with their sources.
 # A panel only writes the keys it demonstrates; the remaining optional attributes are listed
 # beside it as comments, and uncommenting them is enough to use them. The full field table is
 # in the README.
@@ -132,6 +134,11 @@ sources:
     cmd: ./scripts/sys_log.sh
     interval: 5s        # stream has its own 3-second window
     log_cap: 200        # scrolling buffer capacity, default 200
+  - name: daily_year    # demo data (scripts/demo_year.sh); the only source feeding the heatmap
+    type: timeseries    # a year needs about 370 points
+    cmd: ./scripts/demo_year.sh
+    interval: 1h        # the values are fixed per day, so the grid changes daily
+    history_cap: 400    # at the default 60 the panel would only fill the last two months
 
   # The current month's calendar, commented out by default; uncomment with the panel in row 4.
   # - name: cal
@@ -255,7 +262,20 @@ layout:
         title: Load (raw)
         # wrap: true          # over-wide lines wrap (the panel grows); default truncates with …
 
-  # ═══ 4) text + table ×2: three blocks side by side in one row ═══
+  # ═══ 4) heatmap: one cell per day over the last 52 weeks ═══
+  #    A heatmap folds a timeseries source's points into local calendar days, summing the ones
+  #    that share a day. A day takes two columns, so the grid is 112 columns wide and wants a
+  #    row of its own.
+  - title: Year
+    title_align: left
+    widgets:
+      - type: heatmap
+        source: daily_year
+        title: Activity (last 52 weeks)
+        # max: 100            # the value of a full cell; default is this window's busiest day
+        # color: '#8be9fd'
+
+  # ═══ 5) text + table ×2: three blocks side by side in one row ═══
   #    width: the number of columns a panel occupies including its border; omitted, the row is
   #    split elastically. When the fixed widths exceed the terminal width they are scaled
   #    proportionally, so on a narrow terminal columns are truncated rather than the row
@@ -296,7 +316,7 @@ layout:
           - {key: mem, title: Mem%, width: 6}
           - {key: comm, title: Command, width: 30}
 
-  # ═══ 5) logs: a scrolling log, on its own row ═══
+  # ═══ 6) logs: a scrolling log, on its own row ═══
   #    A log panel on the last row absorbs the screen's remaining height by default, so it can
   #    show more logs. This row sets height, making it fixed-height with no absorption, and
   #    every panel in it is drawn at 10 lines. When fetching data fails, a WARN line produced

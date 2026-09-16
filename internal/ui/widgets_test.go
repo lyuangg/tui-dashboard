@@ -2,11 +2,14 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"regexp"
 	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"charm.land/lipgloss/v2"
 
 	"tui-dashboard/internal/config"
 	"tui-dashboard/internal/source"
@@ -135,6 +138,12 @@ func TestCapabilityGate(t *testing.T) {
 
 		{"bar", source.TypeTimeseries, true},
 		{"bar", source.TypeText, false},
+
+		{"heatmap", source.TypeTimeseries, true},
+		{"heatmap", source.TypeArray, false},
+		{"heatmap", source.TypeMap, false},
+		{"heatmap", source.TypeNumber, false},
+		{"heatmap", source.TypeText, false},
 
 		{"table", source.TypeTable, true},
 		{"table", source.TypeMap, false},
@@ -762,6 +771,276 @@ func TestBarLabelsIgnored(t *testing.T) {
 		Points: ordinal(10, 20, 30)}}
 	if out := stripANSI(renderWidget(vbar, arr, 40, 0)); strings.Contains(out, "shard") {
 		t.Errorf("vbar 上不该画名字:\n%s", out)
+	}
+}
+
+// —— heatmap ——
+
+// heatPanelW is the narrowest panel that shows the whole grid without clipping: 2 border
+// columns, 2 padding columns, the 4-column weekday gutter and heatWeeks cells.
+const heatPanelW = 4 + 4 + heatWeeks*heatCellW
+
+// TestHeatWindow pins the window's first day: the Sunday heatWeeks-1 weeks before the week
+// enclosing ref, so the window's last column is ref's own week and the grid spans 52*7 days.
+func TestHeatWindow(t *testing.T) {
+	// 2026-09-15 is a Tuesday; the window's first Sunday is 51 weeks earlier.
+	ref := time.Date(2026, 9, 15, 10, 30, 0, 0, time.Local)
+	start := heatWindow(ref)
+	want := time.Date(2025, 9, 21, 0, 0, 0, 0, time.Local)
+	if !start.Equal(want) {
+		t.Errorf("heatWindow(%s) = %s, 期望 %s",
+			ref.Format(time.DateOnly), start.Format(time.DateOnly), want.Format(time.DateOnly))
+	}
+	if start.Weekday() != time.Sunday {
+		t.Errorf("窗口首列应为周日, got %s", start.Weekday())
+	}
+	if got, want := dayNo(ref)-dayNo(start), int64(ref.Weekday())+heatRows*(heatWeeks-1); got != want {
+		t.Errorf("ref 落在第 %d 天, 期望 %d", got, want)
+	}
+	// the day, not the instant, decides the window
+	for _, h := range []int{0, 23} {
+		if got := heatWindow(time.Date(2026, 9, 15, h, 59, 0, 0, time.Local)); !got.Equal(start) {
+			t.Errorf("同一天的 %02d:59 应得同一窗口, got %s", h, got.Format(time.DateOnly))
+		}
+	}
+}
+
+// TestHeatSums pins how points land on cells: the index counts from the window's first Sunday
+// (week*7 + weekday), points sharing a day are summed, and anything outside the window or
+// without a timestamp is dropped.
+func TestHeatSums(t *testing.T) {
+	start := time.Date(2026, 1, 4, 0, 0, 0, 0, time.Local) // a Sunday: the window's first column
+	at := func(day, hour int) time.Time {
+		return time.Date(2026, 1, 4+day, hour, 0, 0, 0, time.Local)
+	}
+	pts := []source.Point{
+		{TS: at(0, 3), V: 1},                // the window's first day → index 0
+		{TS: at(1, 9), V: 2},                // Monday → index 1
+		{TS: at(1, 21), V: 3},               // the same Monday again → summed
+		{TS: at(363, 12), V: 4},             // the window's last day → index 363
+		{TS: at(364, 12), V: 8},             // one day past the window → dropped
+		{TS: start.AddDate(0, 0, -1), V: 8}, // one day before the window → dropped
+		{V: 8},                              // no timestamp → dropped
+	}
+	sums, peak := heatSums(pts, start)
+	if len(sums) != heatWeeks*heatRows {
+		t.Fatalf("格数 = %d, 期望 %d", len(sums), heatWeeks*heatRows)
+	}
+	for _, c := range []struct {
+		i    int
+		want float64
+	}{{0, 1}, {1, 5}, {363, 4}} {
+		if sums[c.i] != c.want {
+			t.Errorf("sums[%d] = %v, 期望 %v", c.i, sums[c.i], c.want)
+		}
+	}
+	total := 0.0
+	for _, s := range sums {
+		total += s
+	}
+	if total != 10 {
+		t.Errorf("窗口内合计 = %v, 期望 10(窗口外与无时间戳的点应被丢弃)", total)
+	}
+	if peak != 5 {
+		t.Errorf("peak = %v, 期望 5(窗口内最大的一天)", peak)
+	}
+}
+
+// TestHeatLevel pins the ramp bands: two equal bands of the scale, a non-zero value always
+// visible (at least band 1), and band 0 for a day with nothing on it or without a scale.
+func TestHeatLevel(t *testing.T) {
+	for _, c := range []struct {
+		v, scale float64
+		want     int
+	}{
+		{0, 100, 0}, {1, 100, 1}, {50, 100, 1}, {51, 100, 2},
+		{100, 100, 2}, {250, 100, 2}, {5, 0, 0}, {-1, 100, 0},
+	} {
+		if got := heatLevel(c.v, c.scale); got != c.want {
+			t.Errorf("heatLevel(%v, %v) = %d, 期望 %d", c.v, c.scale, got, c.want)
+		}
+	}
+}
+
+// TestRenderHeatmap pins the panel's shape and what the grid says: a day whose total is the
+// window's peak is a full cell, a day without data is the no-data glyph, and the month row
+// names the current month. The renderer takes the current week as the window's right edge, so
+// the fixture is timed from the clock as well.
+func TestRenderHeatmap(t *testing.T) {
+	now := time.Now()
+	// a day inside the window: two weeks back at noon local, away from any day boundary
+	day := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, now.Location()).AddDate(0, 0, -14)
+	v := source.SourceView{
+		Type: source.TypeTimeseries,
+		V: source.Value{Type: source.TypeTimeseries, Points: []source.Point{
+			{TS: day, V: 40}, {TS: day.Add(6 * time.Hour), V: 60}, // the same day → summed to 100
+		}},
+	}
+	w := config.Widget{Type: "heatmap", Source: "daily_year", Title: "活动"}
+	out := stripANSI(renderWidget(w, v, heatPanelW, 0))
+	lines := strings.Split(out, "\n")
+	if len(lines) != 10 { // 2 border rows + the month row + 7 weekday rows
+		t.Fatalf("面板行数 = %d(期望 10):\n%s", len(lines), out)
+	}
+	if !strings.Contains(lines[1], now.Format("Jan")) {
+		t.Errorf("月份标签行应含 %s: %q", now.Format("Jan"), lines[1])
+	}
+	// the row of that weekday: every cell carries the same glyph — the level shows in the color
+	// alone, so no other block character appears in it — and every glyph has an air column
+	row := lines[2+int(day.Weekday())]
+	if !strings.Contains(row, string(heatCell)) {
+		t.Errorf("有数据的日子应画格子 %c: %q", heatCell, row)
+	}
+	for _, g := range []string{"█", "▓", "▒", "░", "·", "▪"} {
+		if strings.Contains(row, g) {
+			t.Errorf("格子样式应一致, 不该出现 %q: %q", g, row)
+		}
+	}
+	if strings.Contains(row, string(heatCell)+string(heatCell)) {
+		t.Errorf("格子之间应留出空隙: %q", row)
+	}
+	// the grid is the 4-column weekday gutter plus heatWeeks cells of heatCellW columns each
+	if got := visibleWidth(lines[1]); got != heatPanelW {
+		t.Errorf("面板宽 = %d(期望 %d, 内容 %d 列):\n%s", got, heatPanelW, heatPanelW-4, out)
+	}
+	// days after today have not happened: every row below today's weekday ends blank, the rows
+	// above it still carry the current week's cell
+	for r := 0; r < heatRows; r++ {
+		row := []rune(strings.Trim(lines[2+r], "│"))
+		// from the left: 1 column of padding, the 4-column gutter, then the last cell's column
+		last := row[1+4+heatCellW*(heatWeeks-1)]
+		if want := r > int(now.Weekday()); want != (last == ' ') {
+			t.Errorf("第 %d 行末列留空 = %v, 期望 %v: %q", r, last == ' ', want, string(row))
+		}
+	}
+}
+
+// TestHeatShades pins the ramp's premise: heatLevels distinct colors, from an empty cell to the
+// heatmap accent, since every cell shares one glyph and the color is the only signal. The empty
+// end sits near the theme's background rather than at the dim grey every other panel uses.
+func TestHeatShades(t *testing.T) {
+	sh := heatShades()
+	if len(sh) != heatLevels {
+		t.Fatalf("色阶档数 = %d, 期望 %d", len(sh), heatLevels)
+	}
+	seen := map[string]bool{}
+	for i, c := range sh {
+		key := fmt.Sprintf("%v", c)
+		if seen[key] {
+			t.Errorf("第 %d 档与前面某档同色(%s), 档位不可分", i, key)
+		}
+		seen[key] = true
+	}
+	// the empty end is the theme's dim grey moved away from the text colors, the full end is
+	// the theme's own accent; the blend returns both as RGB, so compare channels
+	guide := lipgloss.Color(cur.Guide)
+	if sameColor(sh[0], guide) {
+		t.Errorf("空白天那一档不该与主题暗灰 %v 同色, 应更靠近背景", guide)
+	}
+	if got := lightness(sh[0]); got >= lightness(guide) {
+		t.Errorf("深色主题下空白天应更暗: 亮度和 = %d, 主题暗灰 = %d", got, lightness(guide))
+	}
+	if got, want := sh[heatLevels-1], widgetColor("heatmap"); !sameColor(got, want) {
+		t.Errorf("最高档应为 heatmap 主色 %v, got %v", want, got)
+	}
+}
+
+// TestHeatEmptyLightTheme pins the empty-cell shift: it stays strictly between the theme's guide
+// and that theme's background. Equal to the guide would leave the no-data day as bright as every
+// other panel's no-data grey (no recession); equal to the background would erase those days from
+// the grid. A pale guide means a pale background, so the direction flips with the theme.
+func TestHeatEmptyLightTheme(t *testing.T) {
+	before := cur
+	t.Cleanup(func() { UseTheme(before.Name) })
+
+	for _, c := range []struct {
+		theme  string
+		darker bool
+	}{
+		{"", true},       // default: a dark background
+		{"nord", true},   // the other dark presets
+		{"light", false}, // a light background
+	} {
+		if !UseTheme(c.theme) {
+			t.Fatalf("UseTheme(%q) 失败", c.theme)
+		}
+		guide := lipgloss.Color(cur.Guide)
+		got := heatEmpty()
+		if sameColor(got, guide) {
+			t.Errorf("%s: 空白天不该就是主题暗灰 %v, 应更靠近背景", c.theme, guide)
+		}
+		if c.darker && lightness(got) >= lightness(guide) {
+			t.Errorf("%s: 空白天应更暗, 亮度和 = %d, 暗灰 = %d", c.theme, lightness(got), lightness(guide))
+		}
+		if !c.darker && lightness(got) <= lightness(guide) {
+			t.Errorf("%s: 空白天应更浅, 亮度和 = %d, 暗灰 = %d", c.theme, lightness(got), lightness(guide))
+		}
+		bg := uint32(0) // the background's lightness sum: black, or white on a light theme
+		if !c.darker {
+			bg = 3 * 0xffff
+		}
+		if lightness(got) == bg {
+			t.Errorf("%s: 空白天压到了背景上, 与背景不可分, 空格子会看不见", c.theme)
+		}
+	}
+}
+
+// lightness is the sum of a color's channels: enough to tell which of two colors is the paler.
+func lightness(c color.Color) uint32 {
+	r, g, b, _ := c.RGBA()
+	return r + g + b
+}
+
+// sameColor compares two colors by their channels, so it holds across representations (a
+// 256-color index and the RGB value it was blended into are the same color).
+func sameColor(a, b color.Color) bool {
+	ar, ag, ab, _ := a.RGBA()
+	br, bg, bb, _ := b.RGBA()
+	return ar == br && ag == bg && ab == bb
+}
+
+// TestHeatmapMaxFixesScale pins that max: fixes the top of the ramp: the same day that is a
+// full cell with the automatic scale sits one band up with a max well above it.
+func TestHeatmapMaxFixesScale(t *testing.T) {
+	now := time.Now()
+	day := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, now.Location()).AddDate(0, 0, -14)
+	v := source.SourceView{
+		Type: source.TypeTimeseries,
+		V:    source.Value{Type: source.TypeTimeseries, Points: []source.Point{{TS: day, V: 100}}},
+	}
+	w := config.Widget{Type: "heatmap", Source: "daily_year", Title: "活动", Max: 400}
+	out := renderWidget(w, v, heatPanelW, 0)
+
+	// the cell is a run of its own (its neighbours have no data), so the exact styled run shows
+	// which band it took: max 400 puts a value of 100 in the first of the two bands
+	sh := heatShades()
+	if want := heatRun(sh, 1); !strings.Contains(out, want) {
+		t.Errorf("max: 400 下 100 应为一档: 面板中找不到 %q", want)
+	}
+	peak := heatRun(sh, heatLevels-1)
+	if strings.Contains(out, peak) {
+		t.Errorf("max: 400 下 100 不该画成满格")
+	}
+}
+
+// heatRun is the styled run a single cell of the given level renders as; a cell whose
+// neighbours are all of another level becomes a run of its own, so the exact string pins
+// which band a day landed in.
+func heatRun(sh []color.Color, level int) string {
+	return lipgloss.NewStyle().Foreground(sh[level]).
+		Render(string(heatCell) + strings.Repeat(" ", heatCellW-1))
+}
+
+// TestHeatmapNoValue pins that a heatmap whose source has produced nothing draws the shared
+// message panel rather than an empty grid.
+func TestHeatmapNoValue(t *testing.T) {
+	w := config.Widget{Type: "heatmap", Source: "daily_year", Title: "活动"}
+	out := stripANSI(renderWidget(w, source.SourceView{Type: source.TypeTimeseries}, 60, 0))
+	if !strings.Contains(out, "waiting for data") {
+		t.Errorf("还没数据时应走 msgPanel:\n%s", out)
+	}
+	if strings.Contains(out, string(heatCell)) {
+		t.Errorf("没数据时不该画网格:\n%s", out)
 	}
 }
 

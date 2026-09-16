@@ -141,6 +141,7 @@ widget 字段:`type` `source` `value` `title` `title_align` `color` `style` `for
 | `gauge` | 一个数,画成 `min`–`max` 之间的条 | `number` `array` `timeseries` `map` |
 | `chart` | 一条序列,画成折线(`style`:`braille` \| `dots` \| `line`) | `number` `array` `timeseries` `map` |
 | `bar` | 一条序列,画成条形(`style`:`hbar` \| `solid` \| `vbar`) | `number` `array` `timeseries` `map` |
+| `heatmap` | 一年的逐日数值,每天一格 | `timeseries` |
 | `table` | 记录表(`columns` 定列) | `table` |
 | `logs` | 滚动日志缓冲(深 `log_cap` 行) | `logs` |
 | `text` | 该源的原始输出,或静态 `text:` 字符串 | 全部类型 |
@@ -149,6 +150,13 @@ widget 渲染的是上表中"解析后的值"经 `value:` 选出来的那一份,
 `stat` 与 `gauge` 取所给值的最后一个,`chart` 与 `bar` 画整条序列,两者读的是同一份值,
 因此同一个源可供多个面板使用。`table` 与 `logs` 各只渲染一种形状,只接受一种源类型;
 `text` 接受全部类型。
+
+`heatmap` 画滚动的最近 52 周,每个本地日历日一格:周从左到右、星期从上到下,晚于今天的格子
+留空;落在同一天的点求和,故脚本每天输出一个点即可。`max:` 定满格对应的数值(默认取窗口中
+最大的一天),档位只靠颜色区分。
+
+它只接受 `timeseries` 源,`history_cap` 需调到 370 左右才够画满一年(默认的 60 只能填满最近
+两个月);网格占 112 列,因此要独占一行。
 
 ### `value:`
 

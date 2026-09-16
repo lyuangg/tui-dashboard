@@ -13,8 +13,8 @@ type Theme struct {
 	Good, Warn, Bad string // log level / status UP..DOWN / gauge thresholds / footer error banners
 	Axis, Guide     string // chart axes / bar reference line + scrollbar (dim grey)
 
-	// Widget holds the default panel accent color of the 7 widget types (key = type); chart
-	// and logs usually share a color, while stat/bar/gauge/table/text are independent.
+	// Widget holds the default panel accent color of the 8 widget types (key = type); chart
+	// and logs usually share a color, while stat/bar/gauge/heatmap/table/text are independent.
 	Widget map[string]string
 	// Named is widget color by preset name: a writable name → spec. Names follow the theme:
 	// the same set of keys gets, in each theme, values adapted to that theme's own
@@ -23,8 +23,8 @@ type Theme struct {
 	Named map[string]string
 }
 
-// canonicalWidget is the seven widget types; a theme must supply them all.
-var canonicalWidget = []string{"stat", "chart", "bar", "gauge", "table", "logs", "text"}
+// canonicalWidget is the eight widget types; a theme must supply them all.
+var canonicalWidget = []string{"stat", "chart", "bar", "gauge", "heatmap", "table", "logs", "text"}
 
 // canonicalNamed is the fixed set of named-color names; every theme supplies all of them.
 var canonicalNamed = []string{
@@ -49,7 +49,7 @@ func DefaultTheme() Theme {
 	return theme("default", "212", "10", "214", "196", "242", "240",
 		map[string]string{
 			"stat": "63", "chart": "33", "bar": "75", "gauge": "36",
-			"table": "208", "logs": "33", "text": "240",
+			"heatmap": "40", "table": "208", "logs": "33", "text": "240",
 		},
 		defaultNamed(),
 	)
@@ -71,8 +71,8 @@ func DraculaTheme() Theme {
 		"#50fa7b", "#ffb86c", "#ff5555", "#6272a4", "#44475a",
 		map[string]string{
 			"stat": "#ff79c6", "chart": "#8be9fd", "bar": "#bd93f9",
-			"gauge": "#50fa7b", "table": "#ffb86c", "logs": "#8be9fd",
-			"text": "#6272a4",
+			"gauge": "#50fa7b", "heatmap": "#50fa7b", "table": "#ffb86c",
+			"logs": "#8be9fd", "text": "#6272a4",
 		},
 		map[string]string{
 			"red": "#ff5555", "orange": "#ffb86c", "amber": "#f1fa8c", "yellow": "#f1fa8c",
@@ -88,8 +88,8 @@ func GruvboxTheme() Theme {
 		"#b8bb26", "#fabd2f", "#fb4934", "#928374", "#7c6f64",
 		map[string]string{
 			"stat": "#fe8019", "chart": "#83a598", "bar": "#b8bb26",
-			"gauge": "#8ec07c", "table": "#d65d0e", "logs": "#83a598",
-			"text": "#928374",
+			"gauge": "#8ec07c", "heatmap": "#8ec07c", "table": "#d65d0e",
+			"logs": "#83a598", "text": "#928374",
 		},
 		map[string]string{
 			"red": "#fb4934", "orange": "#fe8019", "amber": "#fabd2f", "yellow": "#fabd2f",
@@ -105,8 +105,8 @@ func NordTheme() Theme {
 		"#a3be8c", "#ebcb8b", "#bf616a", "#616e88", "#4c566a",
 		map[string]string{
 			"stat": "#88c0d0", "chart": "#81a1c1", "bar": "#b48ead",
-			"gauge": "#a3be8c", "table": "#d08770", "logs": "#81a1c1",
-			"text": "#616e88",
+			"gauge": "#a3be8c", "heatmap": "#a3be8c", "table": "#d08770",
+			"logs": "#81a1c1", "text": "#616e88",
 		},
 		map[string]string{
 			"red": "#bf616a", "orange": "#d08770", "amber": "#ebcb8b", "yellow": "#ebcb8b",
@@ -123,8 +123,8 @@ func LightTheme() Theme {
 		"#15803d", "#b45309", "#b91c1c", "#94a3b8", "#cbd5e1",
 		map[string]string{
 			"stat": "#be185d", "chart": "#1d4ed8", "bar": "#4338ca",
-			"gauge": "#047857", "table": "#ea580c", "logs": "#1d4ed8",
-			"text": "#64748b",
+			"gauge": "#047857", "heatmap": "#16a34a", "table": "#ea580c",
+			"logs": "#1d4ed8", "text": "#64748b",
 		},
 		map[string]string{
 			"red": "#dc2626", "orange": "#ea580c", "amber": "#d97706", "yellow": "#ca8a04",
