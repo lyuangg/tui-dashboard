@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"tui-dashboard/internal/config"
 	"tui-dashboard/internal/source"
@@ -422,4 +423,123 @@ func TestBundledExampleRowTitles(t *testing.T) {
 	if msgs := ui.RowTitleSourceRefs(cfg); len(msgs) > 0 {
 		t.Fatalf("内置 example 的行标题不该引用数据源: %v", msgs)
 	}
+}
+
+// —— 配置装载（启动与重载共用）——
+
+// TestBuildDashboard pins the loader startup and the reload key share: a valid config yields the
+// layout, the poll interval and a running manager, and every failure startup used to log.Fatalf on
+// comes back as an error — which is what lets a failed reload leave the dashboard alone.
+//
+// The theme cases read ui.ActiveThemeName rather than rendered colors: the name says what landed,
+// while colors depend on the terminal's color profile.
+func TestBuildDashboard(t *testing.T) {
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	const valid = `
+theme: dracula
+poll_interval: 2s
+sources:
+  - name: t
+    type: text
+    cmd: echo hi
+    interval: 1s
+layout:
+  - title: T
+    widgets:
+      - type: text
+        source: t
+`
+
+	t.Run("合法配置", func(t *testing.T) {
+		ui.UseTheme("") // known baseline, and restored for whatever test runs next
+		t.Cleanup(func() { ui.UseTheme("") })
+
+		mgr, layout, poll, err := buildDashboard(write(t, valid), startupLog{})
+		if err != nil {
+			t.Fatalf("合法配置不应报错: %v", err)
+		}
+		defer mgr.Close()
+
+		if len(layout) != 1 || layout[0].Title != "T" {
+			t.Errorf("layout 应与文件一致, got %+v", layout)
+		}
+		if poll != 2*time.Second {
+			t.Errorf("poll 应取 poll_interval (2s), got %v", poll)
+		}
+		if got := ui.ActiveThemeName(); got != "dracula" {
+			t.Errorf("配置里的 theme 应被应用, got %q", got)
+		}
+	})
+
+	// 从有 theme 改回不写 theme 必须真的回到 default: 写成 `cfg.Theme != "" && UseTheme(...)`
+	// 的话, 这里会静静地留在上一个主题。
+	t.Run("去掉 theme 回到 default", func(t *testing.T) {
+		ui.UseTheme("dracula")
+		t.Cleanup(func() { ui.UseTheme("") })
+
+		mgr, _, _, err := buildDashboard(write(t, strings.Replace(valid, "theme: dracula\n", "", 1)), startupLog{})
+		if err != nil {
+			t.Fatalf("不写 theme 不应报错: %v", err)
+		}
+		defer mgr.Close()
+
+		if got := ui.ActiveThemeName(); got != "default" {
+			t.Errorf("配置里不再写 theme 时应回到 default, got %q", got)
+		}
+	})
+
+	t.Run("未知主题", func(t *testing.T) {
+		ui.UseTheme("nord")
+		t.Cleanup(func() { ui.UseTheme("") })
+
+		_, _, _, err := buildDashboard(write(t, strings.Replace(valid, "theme: dracula", "theme: nonsense", 1)), startupLog{})
+		if err == nil {
+			t.Fatal("未知主题应报错, 而不是退出进程")
+		}
+		if !strings.Contains(err.Error(), "unknown theme") {
+			t.Errorf("错误应指明是主题名不认识, got %v", err)
+		}
+		if got := ui.ActiveThemeName(); got != "nord" {
+			t.Errorf("主题校验失败不应改动当前主题, got %q", got)
+		}
+	})
+
+	t.Run("YAML 写坏", func(t *testing.T) {
+		if _, _, _, err := buildDashboard(write(t, "sources: [\n  - name"), startupLog{}); err == nil {
+			t.Error("解析失败应报错")
+		}
+	})
+
+	t.Run("未知源类型", func(t *testing.T) {
+		ui.UseTheme("dracula")
+		t.Cleanup(func() { ui.UseTheme("") })
+
+		_, _, _, err := buildDashboard(write(t, strings.Replace(valid, "type: text", "type: nonsense", 1)), startupLog{})
+		if err == nil {
+			t.Fatal("未知源类型应报错")
+		}
+		if !strings.Contains(err.Error(), "nonsense") {
+			t.Errorf("错误应指明是哪个类型, got %v", err)
+		}
+		// 源类型校验排在主题之前, 所以这条路径同样不能留下改过的主题
+		if got := ui.ActiveThemeName(); got != "dracula" {
+			t.Errorf("源类型校验失败不应改动当前主题, got %q", got)
+		}
+	})
+
+	t.Run("无配置文件且无 scripts 目录", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("HOME", t.TempDir())
+		if _, _, _, err := buildDashboard("", startupLog{}); err == nil {
+			t.Error("落到内置示例又没有 scripts/ 树时应报错")
+		}
+	})
 }

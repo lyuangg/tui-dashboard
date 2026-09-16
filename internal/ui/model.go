@@ -51,16 +51,28 @@ type model struct {
 	dirty   bool   // set by a tick / window-size change, recomposes the whole page next frame
 	content string // whole page at the display width; on overflow, width-1 yields the scrollbar column
 	rowCap  int    // scrolling-area line count when cached (rows changed → automatically invalid)
+
+	reload ReloadFunc // rebuilds the dashboard from the config file (r); nil = r is inert
+	notice string     // why the last config reload failed ("": none)
 }
+
+// ReloadFunc rebuilds the dashboard from its source of truth, the config file: a fresh provider,
+// layout and re-render interval, or an error. An error leaves the running dashboard untouched and
+// is only reported, so a config that does not parse cannot take the dashboard down with it.
+//
+// ui stays ignorant of the config file; main supplies the closure. The model closes the provider
+// it replaces (see reloadConfig), so the closure only builds the new one.
+type ReloadFunc func() (Provider, []config.Row, time.Duration, error)
 
 // New creates the Bubble Tea program. provider supplies each source's snapshot; layout
 // defines the dashboard structure; poll is the UI re-render interval, and <=0 falls back
-// to config.DefaultPollInterval.
-func New(p Provider, layout []config.Row, poll time.Duration) *tea.Program {
+// to config.DefaultPollInterval. reload rebuilds all three from the config file on the reload
+// key; nil makes that key inert.
+func New(p Provider, layout []config.Row, poll time.Duration, reload ReloadFunc) *tea.Program {
 	if poll <= 0 {
 		poll = config.DefaultPollInterval
 	}
-	m := &model{provider: p, layout: layout, poll: poll}
+	m := &model{provider: p, layout: layout, poll: poll, reload: reload}
 	return tea.NewProgram(m)
 }
 
@@ -94,11 +106,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleKey handles the help toggle, scrolling and quit keys. Scrolling only takes effect
-// when the content overflows (maxOff>0): ↑/k and ↓/j move 1 line, PgUp/PgDn page,
+// handleKey handles the help toggle, the config reload, scrolling and quit keys. Scrolling only
+// takes effect when the content overflows (maxOff>0): ↑/k and ↓/j move 1 line, PgUp/PgDn page,
 // Ctrl+B/F page up/down, Ctrl+D/U half a page up/down, Home/End jump to top/bottom.
 // ? toggles the help overlay (while it is open, scroll keys do not pass through); q or
-// Ctrl+C quits.
+// Ctrl+C quits; r reloads the config file (see reloadConfig).
 func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// A Ctrl combination is reported differently under legacy (the letter in Code) and
 	// kitty (the letter in Text), so both are normalized to a lowercase letter first.
@@ -139,6 +151,10 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch msg.String() {
+	case "r":
+		// Below the help return and the Ctrl block: a typed r lands here under either terminal
+		// protocol (the rule j/k/q rely on), while Ctrl+R stays inert.
+		m.reloadConfig()
 	case "up", "k":
 		m.scroll = clampScroll(m.scroll-1, m.maxOff)
 	case "down", "j":
@@ -153,6 +169,36 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.scroll = m.maxOff
 	}
 	return m, nil
+}
+
+// reloadConfig rebuilds the dashboard from the config file. Success swaps provider, layout and
+// re-render interval and recomposes the page; failure leaves everything as it is and reports why.
+//
+// Only a failure says anything: a reload that works shows itself in the new layout and colors, and
+// the empty footer clears a previous failure.
+//
+// The replaced provider is closed here, since the model owns whichever one it holds (see
+// ReloadFunc); Close is idempotent for a source.Manager.
+func (m *model) reloadConfig() {
+	if m.reload == nil {
+		return // no reload callback
+	}
+	p, layout, poll, err := m.reload()
+	if err != nil {
+		m.notice = "reload failed: " + err.Error()
+		m.dirty = true // the footer gained a line: the scroll area shrinks, so recompose
+		return
+	}
+	if c, ok := m.provider.(interface{ Close() }); ok {
+		c.Close() // reap the old sources' goroutines
+	}
+	m.provider, m.layout = p, layout
+	if poll > 0 {
+		m.poll = poll // nextTick re-reads it, so this applies from the next tick
+	}
+	m.scroll = 0 // the layout may be entirely different
+	m.notice = ""
+	m.dirty = true
 }
 
 // ctrlLetterOf returns the letter pressed in a Ctrl combination (lowercase); 0 for a
@@ -195,29 +241,38 @@ func (m *model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 }
 
 // View renders the whole screen per the config. When the content overflows the whole page
-// scrolls vertically; the footer error banners (≤3) are pinned to the bottom and do not
-// enter the scrolling area. The whole-page layout is cached on model and scrolling only
-// clips a window, see recompose.
+// scrolls vertically; the footer banners (source errors, at most 3, plus a failed reload) are
+// pinned to the bottom and do not enter the scrolling area. The whole-page layout is cached on
+// model and scrolling only clips a window, see recompose.
 func (m *model) View() tea.View {
 	// Every source snapshot is taken once at the top of View, shared by widget layout and
 	// all templates.
 	views := m.provider.Snapshots()
 
 	if !m.provider.HasData() {
+		// A failed reload is reported on this page too: it is what is on screen while the sources
+		// are still silent. Source errors keep their existing behaviour of not appearing here.
+		noticeRows := 0
+		if m.notice != "" {
+			noticeRows = 1
+		}
 		var sb strings.Builder
 		if m.help {
-			sb.WriteString(helpOverlay(m.width, m.bodyRows(0)))
+			sb.WriteString(helpOverlay(m.width, m.bodyRows(noticeRows)))
 		} else {
 			sb.WriteString(Faint.Render(" ⏳ loading data sources…"))
+		}
+		if m.notice != "" {
+			if sb.Len() > 0 {
+				sb.WriteString("\n")
+			}
+			sb.WriteString(errorBanner(m.notice, m.width))
 		}
 		return m.fullView(sb.String())
 	}
 
-	errs := m.provider.Errors()
-	if len(errs) > 3 {
-		errs = errs[:3] // the footer shows at most 3
-	}
-	rows := m.bodyRows(len(errs)) // scroll area lines (room already left for the bottom error banners)
+	banners := m.footerLines()
+	rows := m.bodyRows(len(banners)) // scroll area lines (room already left for the bottom banners)
 
 	// Data (tick) / window size / a change in the error count, or no cache yet → the whole
 	// page recomposes; plain scroll input reuses the cache.
@@ -249,13 +304,32 @@ func (m *model) View() tea.View {
 	if window != "" {
 		sb.WriteString(window)
 	}
-	for i, e := range errs {
+	for i, b := range banners {
 		if window != "" || i > 0 {
 			sb.WriteString("\n")
 		}
-		sb.WriteString(errorBanner(e, m.width))
+		sb.WriteString(errorBanner(b, m.width))
 	}
 	return m.fullView(sb.String())
+}
+
+// footerLines is the footer's display order: every source error (capped at 3, as before), then why
+// the last config reload failed. Appending after the cap keeps 3 errors from pushing the reload
+// line off.
+//
+// Built fresh rather than appended onto provider.Errors(), whose spare capacity would be written
+// into.
+func (m *model) footerLines() []string {
+	errs := m.provider.Errors()
+	if len(errs) > 3 {
+		errs = errs[:3]
+	}
+	out := make([]string, 0, len(errs)+1)
+	out = append(out, errs...)
+	if m.notice != "" {
+		out = append(out, m.notice)
+	}
+	return out
 }
 
 // recompose lays the whole page out into the content cache and computes the scroll
@@ -309,8 +383,8 @@ func (m *model) fullView(content string) tea.View {
 // widget templates.
 
 // bodyRows is the scrolling content area's line count = total height - number of bottom
-// error banners. When the height is unknown (≤0) or the error banners do not fit it
-// returns 0, meaning no scrolling and the content is sent as one block.
+// footer banners. When the height is unknown (≤0) or the banners do not fit it returns 0,
+// meaning no scrolling and the content is sent as one block.
 func (m *model) bodyRows(errCount int) int {
 	if m.height <= 0 {
 		return 0

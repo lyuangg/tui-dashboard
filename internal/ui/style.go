@@ -128,7 +128,8 @@ func scrollThumbStyle() lipgloss.Style {
 }
 
 // errorBanner is the footer error banner style (takes the theme's Bad) and truncates it
-// to the screen width.
+// to the screen width. It carries a source's failure and a config reload that did not parse
+// alike: either way the line states something went wrong.
 //
 // Truncation is required: the banner is pinned to the very bottom of the screen and does
 // not enter the scrolling area (see model.View), while msg comes from a source's stderr

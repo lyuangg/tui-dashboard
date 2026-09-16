@@ -21,6 +21,7 @@ func helpRows() []string {
 		"Home / End           jump to top / bottom",
 		"mouse wheel          scroll (3 lines)",
 		"?                     show / hide this help",
+		"r                     reload the config file",
 		"q / Ctrl+C           quit",
 	}
 }

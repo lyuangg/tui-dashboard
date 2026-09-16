@@ -3,9 +3,11 @@ package ui
 // Theme converges the whole dashboard's color scheme into one preset that can be swapped
 // as a unit; with no theme written, default is used. Color values are all lipgloss spec
 // strings (a 256-color index "63" or "#ff79c6"), built into an image/color.Color via
-// lipgloss.Color(spec). The active theme lives in the package-level cur, which every
-// render function reads per frame (style.go / widgets.go), so UseTheme only has to be
-// called once before Program.Run; the theme name is validated on the main side.
+// lipgloss.Color(spec). The active theme lives in the package-level cur, which every render
+// function reads per frame (style.go / widgets.go), so nothing caches a color; the composed page
+// is the one exception, picking the new colors up on its next recompose (see model.reloadConfig).
+// UseTheme runs at the end of every successful config load, startup and reload alike; the theme
+// name is validated on the main side.
 type Theme struct {
 	Name string // preset name: default|dracula|gruvbox|nord|light
 
@@ -163,6 +165,10 @@ func UseTheme(name string) bool {
 	cur = t
 	return true
 }
+
+// ActiveThemeName is the preset name of the theme in use ("default" when none was set). It reports
+// without switching, so a caller can check what landed — or that a rejected config left it alone.
+func ActiveThemeName() string { return cur.Name }
 
 // ThemeNames lists the available theme names (for error hints / documentation).
 func ThemeNames() []string {

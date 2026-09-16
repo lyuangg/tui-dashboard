@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -462,6 +463,258 @@ func TestViewRowsFit(t *testing.T) {
 			if cellWidth(ln) > 239 {
 				t.Errorf("行超宽 %d > 239", cellWidth(ln))
 			}
+		}
+	}
+}
+
+// —— config reload (r) ——
+
+// closeSpyProvider records how often it was closed. A pointer type: stubProvider is a value,
+// whose Close could not record anything.
+type closeSpyProvider struct {
+	stubProvider
+	closed *int
+}
+
+func (p *closeSpyProvider) Close() { *p.closed++ }
+
+// textProvider holds one text source, so a rendered layout is identifiable by its text.
+func textProvider(body string, closed *int) *closeSpyProvider {
+	v := source.SourceView{Type: source.TypeText,
+		V:    source.Value{Type: source.TypeText, Text: body},
+		Text: body}
+	return &closeSpyProvider{
+		stubProvider: stubProvider{views: map[string]source.SourceView{"ptr": v}, data: true},
+		closed:       closed,
+	}
+}
+
+// textLayout is the one-widget layout rendering textProvider's body.
+func textLayout(title string) []config.Row {
+	return []config.Row{{Widgets: []config.Widget{
+		{Type: "text", Source: "ptr", Title: title, MaxLines: 3},
+	}}}
+}
+
+// TestReloadSwapsDashboard covers the successful path: r replaces provider, layout and poll with
+// what the callback returned, closes the one it replaced exactly once, and recomposes.
+//
+// The height is left unknown (0), so rows and rowCap stay 0 across the reload: the footer gaining a
+// line cannot be what triggers the recompose, which pins dirty having been set.
+func TestReloadSwapsDashboard(t *testing.T) {
+	closed := 0
+	old := textProvider("重载前的内容", &closed)
+	next := textProvider("重载后的内容", &closed)
+
+	m := &model{
+		provider: old,
+		layout:   textLayout("旧标题"),
+		poll:     100 * time.Millisecond,
+		width:    120, height: 0,
+	}
+	m.reload = func() (Provider, []config.Row, time.Duration, error) {
+		return next, textLayout("新标题"), 2 * time.Second, nil
+	}
+	if v := stripANSI(m.View().Content); !strings.Contains(v, "重载前的内容") {
+		t.Fatalf("重载前应渲染旧 provider 的内容:\n%s", v)
+	}
+
+	nm, _ := m.Update(tea.KeyPressMsg{Code: 'r'})
+	m = nm.(*model)
+
+	if got, ok := m.provider.(*closeSpyProvider); !ok || got != next {
+		t.Errorf("重载后应换成新 provider, got %T", m.provider)
+	}
+	if closed != 1 {
+		t.Errorf("被换下的 provider 应关闭一次, got %d", closed)
+	}
+	if m.poll != 2*time.Second {
+		t.Errorf("poll 应换成新配置的 2s, got %v", m.poll)
+	}
+	if m.scroll != 0 {
+		t.Errorf("重载后滚动位置应归零, got %d", m.scroll)
+	}
+	// A successful reload says nothing: the new layout is the evidence.
+	if m.notice != "" {
+		t.Errorf("重载成功不该在页脚输出, got %q", m.notice)
+	}
+	if v := stripANSI(m.View().Content); !strings.Contains(v, "重载后的内容") || strings.Contains(v, "重载前的内容") {
+		t.Errorf("重载后应渲染新版面, 而不是缓存里的旧版面:\n%s", v)
+	}
+}
+
+// TestReloadFailureKeepsDashboard covers the failure path: the dashboard stays on screen, its
+// provider untouched and unclosed, with only the reason shown.
+func TestReloadFailureKeepsDashboard(t *testing.T) {
+	closed := 0
+	old := textProvider("仍在跑的内容", &closed)
+
+	m := &model{
+		provider: old,
+		layout:   textLayout("标题"),
+		poll:     100 * time.Millisecond,
+		width:    120, height: 40,
+	}
+	m.reload = func() (Provider, []config.Row, time.Duration, error) {
+		return nil, nil, 0, errors.New("yaml: line 7: did not find expected key")
+	}
+	m.View()
+
+	nm, _ := m.Update(tea.KeyPressMsg{Code: 'r'})
+	m = nm.(*model)
+
+	if m.provider != Provider(old) {
+		t.Errorf("重载失败不应换掉 provider, got %T", m.provider)
+	}
+	if closed != 0 {
+		t.Errorf("重载失败不应关闭 provider, got %d", closed)
+	}
+	if m.notice == "" {
+		t.Errorf("重载失败应把原因留在页脚")
+	}
+	v := stripANSI(m.View().Content)
+	if !strings.Contains(v, "did not find expected key") {
+		t.Errorf("页脚应显示解析错误:\n%s", v)
+	}
+	if !strings.Contains(v, "仍在跑的内容") {
+		t.Errorf("重载失败后旧内容应继续渲染:\n%s", v)
+	}
+}
+
+// TestReloadFailureSurvivesSourceErrors pins that the failure line is appended after the source
+// errors are capped at 3: a dashboard already showing 3 of them still says why the reload failed.
+func TestReloadFailureSurvivesSourceErrors(t *testing.T) {
+	closed := 0
+	errs := []string{"err 1", "err 2", "err 3"}
+	withErrors := func() *closeSpyProvider {
+		return &closeSpyProvider{
+			stubProvider: stubProvider{views: testViews(), data: true, errs: errs},
+			closed:       &closed,
+		}
+	}
+
+	m := &model{
+		provider: withErrors(),
+		layout:   textLayout("标题"),
+		poll:     100 * time.Millisecond,
+		width:    120, height: 40,
+	}
+	m.reload = func() (Provider, []config.Row, time.Duration, error) {
+		return nil, nil, 0, errors.New("yaml: line 3: mapping values are not allowed")
+	}
+	m.View()
+
+	nm, _ := m.Update(tea.KeyPressMsg{Code: 'r'})
+	m = nm.(*model)
+
+	v := stripANSI(m.View().Content)
+	if !strings.Contains(v, "mapping values are not allowed") {
+		t.Errorf("3 条源错误时重载失败原因仍应出现在页脚:\n%s", v)
+	}
+	if got, want := m.bodyRows(len(m.footerLines())), 40-4; got != want {
+		t.Errorf("3 条源错误 + 1 条失败原因应占 4 行, 滚动区应为 %d, got %d", want, got)
+	}
+}
+
+// TestReloadKeyInertWhileHelpOpen pins that the help overlay swallows r like every key but ? and
+// Esc.
+func TestReloadKeyInertWhileHelpOpen(t *testing.T) {
+	calls := 0
+	m := &model{
+		provider: stubProvider{views: testViews(), data: true},
+		layout:   testLayout(),
+		poll:     100 * time.Millisecond,
+		width:    120, height: 40,
+	}
+	m.reload = func() (Provider, []config.Row, time.Duration, error) {
+		calls++
+		return stubProvider{views: testViews(), data: true}, testLayout(), 0, nil
+	}
+
+	nm, _ := m.Update(tea.KeyPressMsg{Code: '?'})
+	m = nm.(*model)
+	if !m.help {
+		t.Fatalf("按 ? 应打开帮助浮层")
+	}
+
+	nm, _ = m.Update(tea.KeyPressMsg{Code: 'r'})
+	m = nm.(*model)
+	if calls != 0 {
+		t.Errorf("帮助浮层打开时 r 不应触发重载, got %d 次", calls)
+	}
+	if !m.help {
+		t.Errorf("帮助浮层打开时按 r 不应关闭浮层")
+	}
+}
+
+// TestReloadKeyWithoutCallback pins that r is inert, not a panic, with no callback — the case of
+// every model literal a test builds directly.
+func TestReloadKeyWithoutCallback(t *testing.T) {
+	m := &model{
+		provider: stubProvider{views: testViews(), data: true},
+		layout:   testLayout(),
+		poll:     100 * time.Millisecond,
+		width:    120, height: 40,
+	}
+	nm, _ := m.Update(tea.KeyPressMsg{Code: 'r'})
+	m = nm.(*model)
+	if m.notice != "" {
+		t.Errorf("没有重载回调时不应产生提示, got %q", m.notice)
+	}
+}
+
+// TestReloadFailureInLoadingPlaceholder pins that a failed reload shows on the loading placeholder
+// too: that page returns early, and the reason is the one thing on it that explains the situation.
+func TestReloadFailureInLoadingPlaceholder(t *testing.T) {
+	closed := 0
+	m := &model{
+		provider: &closeSpyProvider{stubProvider: stubProvider{data: false}, closed: &closed},
+		layout:   textLayout("标题"),
+		poll:     100 * time.Millisecond,
+		width:    120, height: 40,
+	}
+	m.reload = func() (Provider, []config.Row, time.Duration, error) {
+		return nil, nil, 0, errors.New(`unknown theme "nope"`)
+	}
+
+	nm, _ := m.Update(tea.KeyPressMsg{Code: 'r'})
+	m = nm.(*model)
+
+	v := stripANSI(m.View().Content)
+	if !strings.Contains(v, "loading data sources") {
+		t.Errorf("数据未就绪时仍应是加载占位页:\n%s", v)
+	}
+	if !strings.Contains(v, `unknown theme "nope"`) {
+		t.Errorf("数据未就绪时也应看到重载失败原因:\n%s", v)
+	}
+	if closed != 0 {
+		t.Errorf("重载失败不应关闭 provider, got %d", closed)
+	}
+}
+
+// TestReloadCtrlRIsInert pins that only the plain letter reloads: the Ctrl block above the
+// plain-letter switch consumes the combination under either terminal protocol.
+func TestReloadCtrlRIsInert(t *testing.T) {
+	for _, msg := range []tea.KeyPressMsg{
+		{Code: 'r', Mod: tea.ModCtrl},                        // legacy
+		{Code: tea.KeyExtended, Text: "r", Mod: tea.ModCtrl}, // kitty
+	} {
+		calls := 0
+		m := &model{
+			provider: stubProvider{views: testViews(), data: true},
+			layout:   testLayout(),
+			poll:     100 * time.Millisecond,
+			width:    120, height: 40,
+		}
+		m.reload = func() (Provider, []config.Row, time.Duration, error) {
+			calls++
+			return stubProvider{views: testViews(), data: true}, testLayout(), 0, nil
+		}
+
+		nm, _ := m.Update(msg)
+		m = nm.(*model)
+		if calls != 0 {
+			t.Errorf("%v 是 Ctrl 组合, 不应触发重载 (got %d 次)", msg, calls)
 		}
 	}
 }

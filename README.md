@@ -29,7 +29,7 @@ go run . --init                        # copy the bundled example and its script
 go run . -v                            # also print startup notes (config source, working directory, warnings)
 ```
 
-Keys: `?` help · `q` / `Ctrl+C` quit · `↑`/`k` `↓`/`j` scroll · `PgUp`/`PgDn` page ·
+Keys: `?` help · `r` reload the config · `q` / `Ctrl+C` quit · `↑`/`k` `↓`/`j` scroll · `PgUp`/`PgDn` page ·
 `Ctrl+B`/`Ctrl+F` full page · `Ctrl+D`/`Ctrl+U` half page · `Home`/`End` · mouse wheel.
 
 ### Installing as a command

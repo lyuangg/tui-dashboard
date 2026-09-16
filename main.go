@@ -6,6 +6,10 @@
 // is the directory of the config file actually loaded (see scriptDir); falling back to the
 // bundled example inherits the process CWD, where its relative scripts/ commands need a
 // scripts/ tree.
+//
+// The config is read at startup and again on every reload (the r key), both through
+// buildDashboard: an edit takes effect without a restart, and a config that does not hold up
+// changes nothing.
 package main
 
 import (
@@ -16,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"tui-dashboard/internal/config"
 	"tui-dashboard/internal/source"
@@ -49,42 +54,81 @@ func main() {
 		os.Exit(0)
 	}
 
-	data, src, err := config.Locate(*path)
+	mgr, layout, poll, err := buildDashboard(*path, say)
 	if err != nil {
-		log.Fatalf("failed to locate config: %v", err)
+		log.Fatalf("%v", err)
+	}
+	// live is the manager in use, so the one live at exit is reaped rather than left to orphan its
+	// child shells. Only the reload closure and this deferred func touch it, and this runs after
+	// Run has returned; a manager the model already closed is closed again harmlessly.
+	live := mgr
+	defer func() { live.Close() }()
+
+	// The reload key runs the same loader, search chain included: a config file created while the
+	// dashboard runs is picked up by the next reload, as it would be by the next startup.
+	//
+	// The loader gets a silent startupLog, not say: those lines go to stderr, which is only usable
+	// before the alt screen is entered (see startupLog). A reload reports on screen instead.
+	prog := ui.New(mgr, layout, poll, func() (ui.Provider, []config.Row, time.Duration, error) {
+		next, nextLayout, nextPoll, err := buildDashboard(*path, startupLog{})
+		if err != nil {
+			return nil, nil, 0, err
+		}
+		live = next
+		return next, nextLayout, nextPoll, nil
+	})
+	if _, err := prog.Run(); err != nil {
+		log.Fatalf("dashboard exited abnormally: %v", err)
+	}
+}
+
+// buildDashboard locates, parses and validates the config, then builds the source manager and
+// collects what the UI needs. It is the startup path with every fatal exit turned into an error, so
+// the reload key can run the same code and leave the running dashboard untouched when the new
+// config does not hold up.
+//
+// Order matters in one place: the theme is applied last. ui.UseTheme mutates package state, and the
+// steps before it are side-effect free, so a rejected config cannot leave the colors switched to
+// itself.
+func buildDashboard(path string, say startupLog) (*source.Manager, []config.Row, time.Duration, error) {
+	data, src, err := config.Locate(path)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("failed to locate config: %w", err)
 	}
 	// Without a config file the bundled example is loaded, and its relative commands
 	// (./scripts/*.sh) need a scripts/ tree under the process CWD; without one every panel
-	// would only report fetch failures. log.Fatalf, not say.Printf, which is silent by default.
-	if config.ResolvePath(*path) == "" && !hasScriptsDir(".") {
-		log.Fatalf("no config file found and no scripts/ tree here: the bundled example's commands are relative (./scripts/*.sh)" +
+	// would only report fetch failures. An error, not say.Printf, which is silent by default.
+	if config.ResolvePath(path) == "" && !hasScriptsDir(".") {
+		return nil, nil, 0, fmt.Errorf("no config file found and no scripts/ tree here: the bundled example's commands are relative (./scripts/*.sh)" +
 			"\n  --init           write the example config and its scripts into the default config path" +
 			"\n  --config <path>  use an existing config file instead")
 	}
 	cfg, err := config.FromBytes(data)
 	if err != nil {
-		log.Fatalf("failed to parse config (%s): %v", src, err)
-	}
-	if cfg.Theme != "" && !ui.UseTheme(cfg.Theme) {
-		log.Fatalf("unknown theme %q, available: %s", cfg.Theme, strings.Join(ui.ThemeNames(), " "))
+		return nil, nil, 0, fmt.Errorf("failed to parse config (%s): %w", src, err)
 	}
 	for _, s := range cfg.Sources {
 		if _, ok := source.ParseType(s.Type); !ok {
-			log.Fatalf("source %q: unknown type: %q, available: %s (required, see README: source types)",
+			return nil, nil, 0, fmt.Errorf("source %q: unknown type: %q, available: %s (required, see README: source types)",
 				s.Name, s.Type, strings.Join(source.TypeNames, " | "))
 		}
 	}
-	// A widget/source type mismatch never blocks startup: that panel draws its default look
+	// A widget/source type mismatch never blocks the load: that panel draws its default look
 	// and states the reason, everything else runs as usual; -v prints one line per mismatch.
 	for _, m := range checkWidgetTypes(cfg) {
 		say.Printf("⚠ type mismatch (that panel falls back to its default look): %s", m)
 	}
-	// A data source in a row/section title likewise never blocks startup, but the result is
+	// A data source in a row/section title likewise never blocks the load, but the result is
 	// subtler: the field resolves to nothing (a single-level field goes empty, a multi-level
 	// one falls back to the whole title verbatim), and a title that ends up empty takes no
 	// slot in that row's title band (see composeWide).
 	for _, m := range ui.RowTitleSourceRefs(cfg) {
 		say.Printf("⚠ a data source cannot be used in a row title: %s", m)
+	}
+	// Unconditional, not gated on a non-empty name: an empty theme means "default", and skipping
+	// the call would keep a previously loaded theme when theme: is removed.
+	if !ui.UseTheme(cfg.Theme) {
+		return nil, nil, 0, fmt.Errorf("unknown theme %q, available: %s", cfg.Theme, strings.Join(ui.ThemeNames(), " "))
 	}
 	say.Printf("using config: %s", src)
 
@@ -92,7 +136,7 @@ func main() {
 	// (cmd.Dir), so relative paths like ./scripts/*.sh follow the config; falling back to the
 	// bundled example leaves it unset and inherits the process CWD. A config directory with no
 	// scripts/ tree of its own falls back the same way when the process CWD has one.
-	cfgDir := scriptDir(*path)
+	cfgDir := scriptDir(path)
 	dir := resolveCmdDir(cfgDir)
 	switch {
 	case dir != "":
@@ -104,13 +148,7 @@ func main() {
 	}
 
 	// Data sources: one goroutine per source, polling on its own interval
-	mgr := source.New(cfg.Sources, dir)
-	defer mgr.Close()
-
-	prog := ui.New(mgr, cfg.Layout, cfg.PollInterval.Duration)
-	if _, err := prog.Run(); err != nil {
-		log.Fatalf("dashboard exited abnormally: %v", err)
-	}
+	return source.New(cfg.Sources, dir), cfg.Layout, cfg.PollInterval.Duration, nil
 }
 
 // startupLog is the outlet for startup log lines: silent by default, written to stderr only
