@@ -104,7 +104,7 @@ type Widget struct {
 type Column struct {
 	Key   string `yaml:"key"`
 	Title string `yaml:"title"`
-	Width int    `yaml:"width"` // 0 = by content
+	Width int    `yaml:"width"` // fixed column width; 0 = sized by content. Content wider than a fixed width is truncated, and the whole table shrinks evenly when it would not fit the panel
 }
 
 const (

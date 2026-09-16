@@ -1237,10 +1237,16 @@ func hasKey(maps []map[string]any, k string) bool {
 }
 
 func renderTableBody(rows []map[string]any, cols []col, maxW int) string {
-	// Each column width = max(content, title, config), at least 2
+	// A configured width fixes the column: content and title wider than it are truncated,
+	// narrower ones padded. Without one the width comes from the content — the wider of the
+	// values and the title — at least 2.
 	widths := make([]int, len(cols))
 	for i, c := range cols {
-		wid := c.width
+		if c.width > 0 {
+			widths[i] = c.width
+			continue
+		}
+		wid := 0
 		for _, r := range rows {
 			if cw := cellWidth(cellString(r, c.key)); cw > wid {
 				wid = cw
@@ -1255,7 +1261,8 @@ func renderTableBody(rows []map[string]any, cols []col, maxW int) string {
 		widths[i] = wid
 	}
 
-	// Compress evenly when the total width exceeds the limit
+	// Over the limit, every column gives way — a configured width included — shrinking evenly
+	// so the table stays inside the panel rather than being cut off at the right edge.
 	total := sum(widths) + len(cols) - 1
 	if total > maxW && len(cols) > 0 {
 		shrink := (total - maxW) / len(cols)

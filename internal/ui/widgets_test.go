@@ -550,6 +550,35 @@ func TestTableFromValueProjection(t *testing.T) {
 	}
 }
 
+// TestTableColumnFixedWidth verifies that a width from the config fixes that column: content
+// wider than it is truncated, and the title with it; content narrower than it is padded out.
+// A column without a width keeps sizing itself by its content.
+func TestTableColumnFixedWidth(t *testing.T) {
+	v := tableView([]map[string]any{
+		{"name": "a-very-long-service-name", "state": "UP", "zone": "eu"},
+	})
+	w := config.Widget{Type: "table", Source: "svc", Title: "T", Columns: []config.Column{
+		{Key: "name", Title: "NAME", Width: 8},    // narrower than the content: truncates
+		{Key: "state", Title: "STATE", Width: 12}, // wider than the content: pads out
+		{Key: "zone", Title: "ZONE"},              // no width: sized by the content
+	}}
+	lines := strings.Split(stripANSI(renderWidget(w, v, 60, 0)), "\n")
+	if len(lines) < 4 {
+		t.Fatalf("表格应有表头、首行和上下边框:\n%s", strings.Join(lines, "\n"))
+	}
+	inner := func(s string) string { return strings.TrimSuffix(strings.TrimPrefix(s, "│ "), " │") }
+	hdr, row := strings.TrimRight(inner(lines[1]), " "), strings.TrimRight(inner(lines[2]), " ")
+
+	wantHdr := padRight("NAME", 8) + " " + padRight("STATE", 12) + " " + padRight("ZONE", 4)
+	if hdr != strings.TrimRight(wantHdr, " ") {
+		t.Errorf("各列应各占其宽:\n得 %q\n想 %q", hdr, wantHdr)
+	}
+	wantRow := padRight("a-very-…", 8) + " " + padRight("UP", 12) + " " + padRight("eu", 4)
+	if row != strings.TrimRight(wantRow, " ") {
+		t.Errorf("过宽的内容应截成定宽并以 … 结尾,过窄的在列内补齐:\n得 %q\n想 %q", row, wantRow)
+	}
+}
+
 // —— bar ——
 
 // TestRenderBarHorizontalRowsAndValues verifies that a horizontal bar gives one row per
