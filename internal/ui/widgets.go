@@ -1452,8 +1452,38 @@ func lineLimit(ch, maxLines, fallback int) int {
 // charmbracelet/x/ansi: lipgloss's boxes and padding measure width with it, and a
 // discrepancy between the two would make truncation/padding off by one column.
 // Genuinely double-width characters such as CJK and emoji return 2.
+//
+// NOTE: For compound emojis (e.g. 🌡️ = base + variation selector), the base rune alone
+// may report width 1 while the full sequence reports 2. Use advanceRune when walking
+// strings that may contain variation selectors to stay consistent with cellWidth.
 func runeWidth(r rune) int {
 	return ansi.StringWidth(string(r))
+}
+
+// advanceRune returns the display width and byte size of the next grapheme cluster,
+// correctly pairing a base emoji with a trailing variation selector (U+FE0F/U+FE0E)
+// so that the width matches cellWidth. This avoids the off-by-one that occurs when
+// truncating compound emojis such as 🌡️ or ⚠️ rune-by-rune.
+func advanceRune(s string) (width, size int) {
+	r, sz := utf8.DecodeRuneInString(s)
+	w := runeWidth(r)
+	// Variation selectors (U+FE0F presentation style, U+FE0E text style) modify the
+	// preceding character; some terminals render the base emoji + VS16 as double-width
+	// even though the base alone is single-width. ansi.StringWidth("🌡️") == 2 while
+	// ansi.StringWidth("🌡") == 1, so we peek ahead and add the VS width.
+	if sz2 := utf8.RuneLen(r); sz2 < len(s) {
+		next, n2 := utf8.DecodeRuneInString(s[sz:])
+		if next == 0xFE0F || next == 0xFE0E {
+			// The compound width is cellWidth(base+VS). When the base is already ≥2
+			// (e.g. CJK ideograph) the VS does not add a column; when the base is 1
+			// (common for emoji codepoints like 🌡 ⚠) the VS pushes it to 2.
+			if w < 2 {
+				w = 2
+			}
+			sz += n2
+		}
+	}
+	return w, sz
 }
 
 // cellWidth is the number of columns a string actually occupies in the terminal, measured
@@ -1501,14 +1531,13 @@ func wrapLines(lines []string, maxW int) []string {
 				i += n
 				continue
 			}
-			r, size := utf8.DecodeRuneInString(line[i:])
-			rw := runeWidth(r)
+			rw, sz := advanceRune(line[i:])
 			if w > 0 && w+rw > maxW {
 				out = append(out, line[start:i]) // break: escape sequences stay in the segment as they are
 				start, w = i, 0
 			}
 			w += rw
-			i += size
+			i += sz
 		}
 		out = append(out, line[start:])
 	}
@@ -1578,12 +1607,12 @@ func truncateVisible(s string, maxW int) string {
 			i += n
 			continue
 		}
-		r, size := utf8.DecodeRuneInString(s[i:])
-		if w+runeWidth(r) > room {
+		rw, sz := advanceRune(s[i:])
+		if w+rw > room {
 			break
 		}
-		w += runeWidth(r)
-		i += size
+		w += rw
+		i += sz
 	}
 	return s[:i] + "…" + "\x1b[0m"
 }
