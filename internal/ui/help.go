@@ -20,6 +20,7 @@ func helpRows() []string {
 		"Ctrl+U               half page up",
 		"Home / End           jump to top / bottom",
 		"mouse wheel          scroll (3 lines)",
+		"space                pause / resume refresh",
 		"?                     show / hide this help",
 		"r                     reload the config file",
 		"q / Ctrl+C           quit",

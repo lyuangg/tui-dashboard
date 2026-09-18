@@ -6,7 +6,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"charm.land/bubbletea/v2"
+	tea "charm.land/bubbletea/v2"
 
 	"tui-dashboard/internal/config"
 	"tui-dashboard/internal/source"
@@ -44,6 +44,9 @@ type model struct {
 	maxOff   int  // scrollable limit from the last layout (0 = no overflow, scroll keys inert)
 	pageRows int  // lines per page = lines in the visible scrolling area
 	help     bool // whether the keyboard-shortcut help overlay is shown (toggled by ?)
+
+	paused    bool          // whether UI refresh is paused (toggled by space)
+	savedPoll time.Duration // original poll interval saved when paused
 
 	// Whole-page content cache: plain scrolling/paging only slices a window; only a tick, a
 	// window-size change or a change in the error count sets dirty and recomposes.
@@ -155,6 +158,15 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Below the help return and the Ctrl block: a typed r lands here under either terminal
 		// protocol (the rule j/k/q rely on), while Ctrl+R stays inert.
 		m.reloadConfig()
+	case "space":
+		m.paused = !m.paused
+		if m.paused {
+			m.savedPoll = m.poll
+			m.poll = 24 * time.Hour // effectively stop updates
+			return m, nil
+		}
+		m.poll = m.savedPoll // restore original interval
+		return m, m.nextTick() // reschedule tick immediately
 	case "up", "k":
 		m.scroll = clampScroll(m.scroll-1, m.maxOff)
 	case "down", "j":
@@ -194,7 +206,11 @@ func (m *model) reloadConfig() {
 	}
 	m.provider, m.layout = p, layout
 	if poll > 0 {
-		m.poll = poll // nextTick re-reads it, so this applies from the next tick
+		if m.paused {
+			m.savedPoll = poll // save for when we unpause
+		} else {
+			m.poll = poll // nextTick re-reads it, so this applies from the next tick
+		}
 	}
 	m.scroll = 0 // the layout may be entirely different
 	m.notice = ""
@@ -256,6 +272,9 @@ func (m *model) View() tea.View {
 		if m.notice != "" {
 			noticeRows = 1
 		}
+		if m.paused {
+			noticeRows++
+		}
 		var sb strings.Builder
 		if m.help {
 			sb.WriteString(helpOverlay(m.width, m.bodyRows(noticeRows)))
@@ -267,6 +286,12 @@ func (m *model) View() tea.View {
 				sb.WriteString("\n")
 			}
 			sb.WriteString(errorBanner(m.notice, m.width))
+		}
+		if m.paused {
+			if sb.Len() > 0 {
+				sb.WriteString("\n")
+			}
+			sb.WriteString(pausedBanner("⏸ refresh paused (space to resume)", m.width))
 		}
 		return m.fullView(sb.String())
 	}
@@ -309,6 +334,12 @@ func (m *model) View() tea.View {
 			sb.WriteString("\n")
 		}
 		sb.WriteString(errorBanner(b, m.width))
+	}
+	if m.paused {
+		if window != "" || len(banners) > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(pausedBanner("⏸ refresh paused (space to resume)", m.width))
 	}
 	return m.fullView(sb.String())
 }

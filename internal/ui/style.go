@@ -146,6 +146,18 @@ func errorBanner(msg string, width int) string {
 		Render("  " + msg)
 }
 
+// pausedBanner is the footer paused indicator style (takes the theme's Warn) and truncates
+// it to the screen width.
+func pausedBanner(msg string, width int) string {
+	if width > 0 {
+		msg = fitLines(msg, width-2)
+	}
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(cur.Warn)).
+		Bold(true).
+		Render("  " + msg)
+}
+
 // Panel draws a panel with a rounded border; a non-empty title is drawn on the top
 // border (gotop style), and an empty one leaves a bare border. width/height are the
 // overall size including the border; height==0 means the content auto-sizes.
