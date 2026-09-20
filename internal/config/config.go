@@ -93,6 +93,7 @@ type Widget struct {
 	MaxLines int      `yaml:"max_lines"` // logs/text maximum number of displayed lines (from the tail); 0 = no limit, show as many as the panel height allows
 	Text     string   `yaml:"text"`      // text only: pure static content, an alternative to taking data from source
 	Wrap     bool     `yaml:"wrap"`      // text only: over-wide lines are wrapped automatically (default false = truncate with …)
+	Markdown bool     `yaml:"markdown"`  // text only: render text as markdown (default false)
 
 	TimeFormat string `yaml:"time_format"` // logs only: Go time layout for the time column (e.g. "01-02 15:04:05" with a date); empty = "15:04:05". The column width is measured from the layout; other widgets ignore it (no error, same as labels)
 

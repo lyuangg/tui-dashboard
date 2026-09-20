@@ -127,6 +127,22 @@ sources:
     interval: 1h        # 数值按天固定,故整张图逐日变化
     history_cap: 400    # 用默认的 60 则只能填满最近两个月
 
+  - name: sys_info
+    type: text          # 输出 markdown 格式的文本
+    cmd: |
+      echo "## System Info"
+      echo ""
+      echo "- **Hostname**: $(hostname)"
+      echo "- **Uptime**: $(uptime | sed 's/.*up /up /' | sed 's/,.*//')"
+      echo "- **Date**: $(date '+%Y-%m-%d %H:%M')"
+      echo ""
+      echo "[GitHub](https://github.com) · [Docs](https://example.com)"
+      echo ""
+      echo '```'
+      uname -a
+      echo '```'
+    interval: 30s
+
   # 当月日历,默认注释掉,与第 4 行的 cal 面板一并取消注释。
   # - name: cal
   #   type: text          # 脚本输出为整块多行文本,无结构
@@ -240,6 +256,7 @@ layout:
         source: load_arr
         title: Load (raw)
         # wrap: true          # 超宽自动折行(面板随之变高);默认截断并以 … 结尾
+        # markdown: true      # 将文本渲染为 markdown(标题、粗体、斜体、列表、代码块、表格)
 
   # ═══ 4) heatmap:最近 52 周,每天一格 ═══
   #    heatmap 把 timeseries 源的点按本地日历日归并,同一天的点求和。
@@ -291,7 +308,38 @@ layout:
           - {key: mem, title: Mem%, width: 6}
           - {key: comm, title: Command, width: 30}
 
-  # ═══ 6) logs:滚动日志,单独一行 ═══
+  # ═══ 6) markdown:文本渲染为 markdown ═══
+  #    markdown 选项会将文本渲染为带格式的样式:标题、粗体/斜体、列表、代码块和表格都会
+  #    以终端样式显示。启用时忽略 wrap,因为 markdown 渲染器已处理换行。
+  - title: Markdown Demo
+    title_align: left
+    widgets:
+      - type: text
+        source: sys_info
+        title: System Info (markdown)
+        markdown: true
+        width: 48
+      # 静态文本也可以渲染为 markdown
+      # 任务列表(- [ ] / - [x])和链接都支持
+      - type: text
+        title: Static Markdown
+        markdown: true
+        text: |
+          # Quick Notes
+
+          - [x] Set up project
+          - [x] Write code
+          - [ ] Write tests
+          - [ ] Deploy
+
+          Links: [GitHub](https://github.com) · [Docs](https://example.com)
+
+          ![Go Logo](https://go.dev/blog/go-brand/Go-Logo/PNG/Go-Logo_Aqua.png)
+
+          > Built with tui-dashboard
+        width: 48
+
+  # ═══ 7) logs:滚动日志,单独一行 ═══
   #    日志面板位于最后一行时,默认吸收屏幕剩余高度以显示更多日志。本行设置了 height,
   #    即为定高行、不再吸收,行内面板均按 10 行绘制。取数失败时缓冲中会追加一条框架
   #    产生的 WARN 行,可在面板上看到。

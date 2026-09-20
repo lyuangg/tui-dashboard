@@ -140,6 +140,22 @@ sources:
     interval: 1h        # the values are fixed per day, so the grid changes daily
     history_cap: 400    # at the default 60 the panel would only fill the last two months
 
+  - name: sys_info
+    type: text          # outputs markdown-formatted text
+    cmd: |
+      echo "## System Info"
+      echo ""
+      echo "- **Hostname**: $(hostname)"
+      echo "- **Uptime**: $(uptime | sed 's/.*up /up /' | sed 's/,.*//')"
+      echo "- **Date**: $(date '+%Y-%m-%d %H:%M')"
+      echo ""
+      echo "[GitHub](https://github.com) · [Docs](https://example.com)"
+      echo ""
+      echo '```'
+      uname -a
+      echo '```'
+    interval: 30s
+
   # The current month's calendar, commented out by default; uncomment with the panel in row 4.
   # - name: cal
   #   type: text          # the script outputs multi-line text with no structure
@@ -261,6 +277,7 @@ layout:
         source: load_arr
         title: Load (raw)
         # wrap: true          # over-wide lines wrap (the panel grows); default truncates with …
+        # markdown: true      # render text as markdown (headings, bold, italic, lists, code blocks, tables)
 
   # ═══ 4) heatmap: one cell per day over the last 52 weeks ═══
   #    A heatmap folds a timeseries source's points into local calendar days, summing the ones
@@ -316,7 +333,39 @@ layout:
           - {key: mem, title: Mem%, width: 6}
           - {key: comm, title: Command, width: 30}
 
-  # ═══ 6) logs: a scrolling log, on its own row ═══
+  # ═══ 6) markdown: text rendered as markdown ═══
+  #    The markdown option renders the text with formatting: headings, bold/italic, lists,
+  #    code blocks, and tables are all displayed with terminal styling. When enabled, wrap
+  #    is ignored as the markdown renderer handles line breaks.
+  - title: Markdown Demo
+    title_align: left
+    widgets:
+      - type: text
+        source: sys_info
+        title: System Info (markdown)
+        markdown: true
+        width: 48
+      # static text can also be rendered as markdown
+      # task lists (- [ ] / - [x]) and links are supported
+      - type: text
+        title: Static Markdown
+        markdown: true
+        text: |
+          # Quick Notes
+
+          - [x] Set up project
+          - [x] Write code
+          - [ ] Write tests
+          - [ ] Deploy
+
+          Links: [GitHub](https://github.com) · [Docs](https://example.com)
+
+          ![Go Logo](https://go.dev/blog/go-brand/Go-Logo/PNG/Go-Logo_Aqua.png)
+
+          > Built with tui-dashboard
+        width: 48
+
+  # ═══ 7) logs: a scrolling log, on its own row ═══
   #    A log panel on the last row absorbs the screen's remaining height by default, so it can
   #    show more logs. This row sets height, making it fixed-height with no absorption, and
   #    every panel in it is drawn at 10 lines. When fetching data fails, a WARN line produced

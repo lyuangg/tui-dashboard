@@ -267,6 +267,139 @@ func TestTextWrap(t *testing.T) {
 	}
 }
 
+func TestTextMarkdown(t *testing.T) {
+	const cw = 40
+	v := source.SourceView{}
+	w := config.Widget{
+		Type:     "text",
+		Text:     "# Title\n\nThis is **bold** and *italic*.\n\n- Item 1\n- Item 2",
+		Markdown: true,
+		MaxLines: 20,
+	}
+	s := renderText(v, w, cw, 0)
+	// Check that markdown rendering produces output with ANSI codes (bold/italic)
+	if !strings.Contains(s, "Title") {
+		t.Error("markdown 渲染应包含标题")
+	}
+	// Check that bold text is rendered (should contain ANSI escape codes)
+	if !strings.Contains(s, "\033[1m") { // \033[1m is ANSI code for bold
+		t.Error("markdown 渲染应包含粗体样式")
+	}
+	// Check that italic text is rendered
+	if !strings.Contains(s, "\033[3m") { // \033[3m is ANSI code for italic
+		t.Error("markdown 渲染应包含斜体样式")
+	}
+	// Check that list items are rendered
+	if !strings.Contains(s, "•") {
+		t.Error("markdown 渲染应包含列表项")
+	}
+}
+
+func TestPreprocessTaskLists(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "unchecked task",
+			input:    "- [ ] task",
+			expected: "- ☐ task",
+		},
+		{
+			name:     "checked task lowercase",
+			input:    "- [x] task",
+			expected: "- ☑ task",
+		},
+		{
+			name:     "checked task uppercase",
+			input:    "- [X] task",
+			expected: "- ☑ task",
+		},
+		{
+			name:     "mixed tasks",
+			input:    "- [ ] todo\n- [x] done\n- [X] done2\n- regular item",
+			expected: "- ☐ todo\n- ☑ done\n- ☑ done2\n- regular item",
+		},
+		{
+			name:     "indented task",
+			input:    "  - [ ] indented task",
+			expected: "  - ☐ indented task",
+		},
+		{
+			name:     "task without space after bracket",
+			input:    "- [ ]no space",
+			expected: "- ☐no space",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := preprocessTaskLists(tt.input)
+			if result != tt.expected {
+				t.Errorf("preprocessTaskLists(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestStripImages(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "simple image",
+			input:    "![alt](https://example.com/image.png)",
+			expected: "[alt](https://example.com/image.png)",
+		},
+		{
+			name:     "image with spaces in alt",
+			input:    "![Go Logo](https://example.com/logo.png)",
+			expected: "[Go Logo](https://example.com/logo.png)",
+		},
+		{
+			name:     "mixed content",
+			input:    "# Title\n\n![image](url)\n\nSome text",
+			expected: "# Title\n\n[image](url)\n\nSome text",
+		},
+		{
+			name:     "no images",
+			input:    "# Title\n\nSome text",
+			expected: "# Title\n\nSome text",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := stripImages(tt.input)
+			if result != tt.expected {
+				t.Errorf("stripImages(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestTextMarkdownTaskLists(t *testing.T) {
+	const cw = 40
+	v := source.SourceView{}
+	w := config.Widget{
+		Type:     "text",
+		Text:     "# Tasks\n\n- [ ] Task 1\n- [x] Task 2\n- [X] Task 3",
+		Markdown: true,
+		MaxLines: 20,
+	}
+	s := renderText(v, w, cw, 0)
+	// Check that task list checkboxes are rendered
+	if !strings.Contains(s, "☐") {
+		t.Error("markdown 渲染应包含未完成任务复选框 ☐")
+	}
+	if !strings.Contains(s, "☑") {
+		t.Error("markdown 渲染应包含已完成任务复选框 ☑")
+	}
+}
+
 // TestRenderTextStatic verifies that a static text in the config takes precedence over the
 // source output.
 func TestRenderTextStatic(t *testing.T) {

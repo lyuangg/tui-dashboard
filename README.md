@@ -142,7 +142,7 @@ Row fields: `title` `title_align` `color` `bg` `height` `widgets`.
 
 Widget fields: `type` `source` `value` `title` `title_align` `color` `style` `format` `label`
 `min` `max` `x_format` `y_format` `labels` `columns` `max_lines` `time_format` `text` `wrap`
-`width` `height`.
+`markdown` `width` `height`.
 
 ### Widgets
 

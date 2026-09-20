@@ -131,7 +131,7 @@ layout:
 
 widget 字段:`type` `source` `value` `title` `title_align` `color` `style` `format` `label`
 `min` `max` `x_format` `y_format` `labels` `columns` `max_lines` `time_format` `text` `wrap`
-`width` `height`。
+`markdown` `width` `height`。
 
 ### widget
 

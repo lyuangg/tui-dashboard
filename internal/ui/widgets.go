@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"image/color"
 	"math"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
+	"github.com/MichaelMure/go-term-markdown"
 	"github.com/NimbleMarkets/ntcharts/v2/canvas"
 	"github.com/NimbleMarkets/ntcharts/v2/canvas/runes"
 	"github.com/NimbleMarkets/ntcharts/v2/linechart"
@@ -1400,8 +1402,14 @@ func renderText(v source.SourceView, w config.Widget, cw, ch int) string {
 	if s == "" {
 		return frame(w, panelTitle(w, v.Doc), fitLines(Faint.Render("  —"), cw-2), cw, ch)
 	}
+	// Render markdown if enabled
+	if w.Markdown {
+		s = preprocessTaskLists(s)
+		s = stripImages(s)
+		s = string(markdown.Render(s, cw-4, 2))
+	}
 	lines := strings.Split(strings.TrimSuffix(s, "\n"), "\n")
-	if w.Wrap {
+	if w.Wrap && !w.Markdown {
 		// The wrap width is the Panel's content width cw-4 (border 2 + padding 2), not cw-2:
 		// panelColored clips again at cw-4, so a larger wrap width would have the wrapped
 		// lines' tails truncated.
@@ -1412,10 +1420,45 @@ func renderText(v source.SourceView, w config.Widget, cw, ch int) string {
 		lines = lines[len(lines)-limit:] // after wrapping take the tail by display line count, so the panel height matches
 	}
 	body := strings.Join(lines, "\n")
-	if !w.Wrap {
+	if !w.Wrap || w.Markdown {
 		body = fitLines(body, cw-2)
 	}
 	return frame(w, panelTitle(w, v.Doc), body, cw, ch)
+}
+
+// preprocessTaskLists converts GitHub-style task list syntax to Unicode checkbox characters
+// before markdown rendering. This is needed because go-term-markdown doesn't support
+// task lists natively.
+//
+// Converts:
+//   - `- [ ] task` → `- ☐ task` (unchecked)
+//   - `- [x] task` → `- ☑ task` (checked)
+//   - `- [X] task` → `- ☑ task` (checked)
+func preprocessTaskLists(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "- [ ] ") || strings.HasPrefix(trimmed, "- [ ]") {
+			lines[i] = strings.Replace(line, "- [ ] ", "- ☐ ", 1)
+			lines[i] = strings.Replace(lines[i], "- [ ]", "- ☐", 1)
+		} else if strings.HasPrefix(trimmed, "- [x] ") || strings.HasPrefix(trimmed, "- [x]") {
+			lines[i] = strings.Replace(line, "- [x] ", "- ☑ ", 1)
+			lines[i] = strings.Replace(lines[i], "- [x]", "- ☑", 1)
+		} else if strings.HasPrefix(trimmed, "- [X] ") || strings.HasPrefix(trimmed, "- [X]") {
+			lines[i] = strings.Replace(line, "- [X] ", "- ☑ ", 1)
+			lines[i] = strings.Replace(lines[i], "- [X]", "- ☑", 1)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// stripImages converts markdown image syntax ![alt](url) to text links [alt](url).
+// This avoids go-term-markdown fetching remote images on every render, which causes
+// noticeable lag in the TUI.
+func stripImages(s string) string {
+	// Match ![alt](url) and replace with [alt](url)
+	re := regexp.MustCompile(`!\[([^\]]*)\]\(([^)]+)\)`)
+	return re.ReplaceAllString(s, "[$1]($2)")
 }
 
 // —— general helpers ——
