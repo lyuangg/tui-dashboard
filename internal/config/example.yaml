@@ -168,6 +168,12 @@ sources:
   #   cmd: ./scripts/weather.sh
   #   interval: 10m       # wttr.in's observation itself updates about hourly
   #   timeout: 20s        # the public instance is slow; the default min(interval, 5s) is tight
+  - name: github_trending  # GitHub's trending repos (daily), scraped from the page, no auth
+    type: table            # tab-separated, header in the first row
+    cmd: ./scripts/github_trending.sh
+    interval: 5m           # the script caches for an hour, so tighter polling only hits the cache
+    timeout: 25s           # the default min(interval, 5s) is tight when the cache misses and the
+                           # whole trending page has to be downloaded (see the panel in row 7)
 
 layout:
   # A row with only title and no widgets is a standalone title band, drawn at the very top of
@@ -365,7 +371,24 @@ layout:
           > Built with tui-dashboard
         width: 48
 
-  # ═══ 7) logs: a scrolling log, on its own row ═══
+  # ═══ 7) table: GitHub trending, a full-width network-fed table ═══
+  #    The script caches its result for an hour and falls back to the last good one on failure, so
+  #    this panel stays fresh while GitHub is hit at most once an hour. The today column is the
+  #    stars gained in the last 24 hours, the metric Trending ranks by.
+  - title: GitHub Trending
+    title_align: left
+    widgets:
+      - type: table
+        source: github_trending
+        title: Daily
+        columns:
+          - {key: rank, title: '#', width: 4}
+          - {key: repo, title: Repo, width: 30}
+          - {key: language, title: Language, width: 12}
+          - {key: today, title: Stars, width: 9}
+          - {key: description, title: Description, width: 110}
+
+  # ═══ 8) logs: a scrolling log, on its own row ═══
   #    A log panel on the last row absorbs the screen's remaining height by default, so it can
   #    show more logs. This row sets height, making it fixed-height with no absorption, and
   #    every panel in it is drawn at 10 lines. When fetching data fails, a WARN line produced

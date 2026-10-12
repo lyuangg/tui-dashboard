@@ -155,6 +155,11 @@ sources:
   #   cmd: ./scripts/weather.sh
   #   interval: 10m       # 观测值本身约每小时才更新
   #   timeout: 20s        # 公共实例响应慢,默认 min(interval, 5s) 偏紧
+  - name: github_trending  # GitHub Trending(daily),抓页面解析,无需认证
+    type: table            # 制表符分隔,首行表头
+    cmd: ./scripts/github_trending.sh
+    interval: 5m           # 脚本内部缓存 1 小时,轮询快于此只会命中缓存
+    timeout: 25s           # 默认 min(interval, 5s) 偏紧:未命中缓存时要下载整页(面板见第 8 行)
 
 layout:
   # 只有 title、没有 widgets 的行为独立标题带,绘制在屏幕最上方
@@ -339,7 +344,23 @@ layout:
           > Built with tui-dashboard
         width: 48
 
-  # ═══ 7) logs:滚动日志,单独一行 ═══
+  # ═══ 7) table:GitHub Trending,整行宽的联网表 ═══
+  #    脚本结果缓存 1 小时,失败时回退到上次成功的结果,故 GitHub 最多每小时抓一次,
+  #    面板却始终有数。today 列 = 最近 24 小时新增 star,即 Trending 的排序依据。
+  - title: GitHub Trending
+    title_align: left
+    widgets:
+      - type: table
+        source: github_trending
+        title: Daily
+        columns:
+          - {key: rank, title: '#', width: 4}
+          - {key: repo, title: Repo, width: 30}
+          - {key: language, title: Language, width: 12}
+          - {key: today, title: Stars, width: 9}
+          - {key: description, title: Description, width: 110}
+
+  # ═══ 8) logs:滚动日志,单独一行 ═══
   #    日志面板位于最后一行时,默认吸收屏幕剩余高度以显示更多日志。本行设置了 height,
   #    即为定高行、不再吸收,行内面板均按 10 行绘制。取数失败时缓冲中会追加一条框架
   #    产生的 WARN 行,可在面板上看到。
