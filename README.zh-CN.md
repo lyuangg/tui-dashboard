@@ -16,6 +16,7 @@ widget 的标题、标签、format 与静态文本都是 Go 模板;内置五套�
 仓库内附示例配置 [example.zh-CN.yaml](internal/config/example.zh-CN.yaml)。
 
 ![tui-dashboard](screenshot/1.png)
+![tui-dashboard2](screenshot/2.png)
 
 ## 用法
 

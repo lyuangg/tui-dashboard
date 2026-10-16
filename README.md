@@ -16,6 +16,8 @@ The repo ships an example config: [example.yaml](internal/config/example.yaml).
 
 ![tui-dashboard](screenshot/1.png)
 
+![tui-dashboard2](screenshot/2.png)
+
 ## Usage
 
 Requires Go 1.25+.
